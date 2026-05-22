@@ -54,7 +54,7 @@
   }
   button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
   button:disabled { opacity: .5; cursor: not-allowed; }
-  .toolbar { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   .status { font-size: 12px; color: var(--muted); }
   .status.ok { color: var(--accent); }
   .status.warn { color: var(--warn); }
@@ -66,14 +66,46 @@
   }
   details summary { cursor: pointer; color: var(--muted); }
   .ratio-val { min-width: 56px; display: inline-block; text-align: right; color: var(--accent-2); font-family: ui-monospace, Consolas, monospace; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--panel-2);
+    border: 1px solid var(--border); display: inline-block; vertical-align: middle;
+    object-fit: cover; margin-right: 8px;
+  }
+  .display-name { font-weight: 600; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
   <header>
-    <h1>AI Radio Host <span class="pill">P0</span></h1>
-    <div class="phase">Settings only — no auth / no playback yet</div>
+    <h1>AI Radio Host <span class="pill">P1</span></h1>
+    <div class="phase">Login + profile — no playback yet</div>
   </header>
   <main>
+
+    <section>
+      <h2>Account</h2>
+      <div class="row">
+        <label>Status</label>
+        <div id="acc-status" class="status">…</div>
+      </div>
+      <div class="row" id="row-display-name" style="display:none">
+        <label>Logged in as</label>
+        <div><img id="acc-avatar" class="avatar" alt="" style="display:none"><span id="acc-display-name" class="display-name">…</span> <span id="acc-product" class="mono"></span></div>
+      </div>
+      <div class="row" id="row-token-expiry" style="display:none">
+        <label>Access token</label>
+        <div id="acc-token-expiry" class="mono">…</div>
+      </div>
+      <div class="row" id="row-granted-scopes" style="display:none">
+        <label>Granted scopes</label>
+        <div id="acc-granted-scopes" class="mono" style="word-break:break-word">…</div>
+      </div>
+      <div class="toolbar">
+        <button id="btn-login">Log in with Spotify</button>
+        <button id="btn-logout" class="secondary" style="display:none">Log out</button>
+        <button id="btn-refresh-now" class="secondary" style="display:none" title="Manually refresh the access token now">Refresh token now</button>
+      </div>
+    </section>
 
     <section>
       <h2>Environment (read-only)</h2>
@@ -158,7 +190,8 @@
         <pre id="debug-storage" style="background:var(--panel-2);padding:10px;border-radius:6px;overflow:auto;max-height:280px;font-size:12px"></pre>
       </details>
       <div class="status" style="margin-top:8px">
-        P0 has no network calls. Login + SDK arrive in P1+.
+        Token + refresh_token stay in localStorage so reload preserves login.
+        Tokens are redacted in the debug panel above (length-only).
       </div>
     </section>
 
@@ -168,9 +201,7 @@
 'use strict';
 
 // ============================================================
-// Top constants — CLIENT_ID is public, safe to commit.
-// REDIRECT_URI is selected at runtime from current origin so the
-// same index.html works on Pages and on local dev (127.0.0.1).
+// Top constants
 // ============================================================
 const CLIENT_ID = 'faea1a7639724188bad469644b97ceb9';
 
@@ -183,45 +214,257 @@ function pickRedirectUri() {
   const h = location.hostname;
   if (h === '127.0.0.1') return REDIRECT_URIS.local;
   if (h.endsWith('github.io')) return REDIRECT_URIS.pages;
-  // Anything else (file://, localhost, other host) — surface clearly.
-  // We intentionally do NOT silently fall back to 'localhost' since Spotify rejects it.
   return null;
 }
 const REDIRECT_URI = pickRedirectUri();
 
-// ============================================================
-// Settings — defaults + localStorage persistence
-// ============================================================
-const STORAGE_KEY = 'spotifyRadio.settings.v1';
+const SCOPES = [
+  'streaming',
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'playlist-read-private',
+  'user-library-read',
+  'user-top-read',
+  'user-read-recently-played',
+];
 
+const SPOTIFY_AUTHORIZE_URL = 'https://accounts.spotify.com/authorize';
+const SPOTIFY_TOKEN_URL     = 'https://accounts.spotify.com/api/token';
+const SPOTIFY_ME_URL        = 'https://api.spotify.com/v1/me';
+
+const SETTINGS_KEY = 'spotifyRadio.settings.v1';
+const AUTH_KEY     = 'spotifyRadio.auth.v1';
+const PKCE_VERIFIER_SS_KEY = 'spotifyRadio.pkce.verifier';
+const PKCE_STATE_SS_KEY    = 'spotifyRadio.pkce.state';
+
+// ============================================================
+// PURE FUNCTIONS — testable in isolation
+// ============================================================
+function base64urlFromBytes(bytes) {
+  let s = '';
+  const arr = new Uint8Array(bytes);
+  for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function pkceVerifier(length = 64) {
+  // RFC 7636: 43-128 chars from [A-Z a-z 0-9 - . _ ~]
+  if (length < 43 || length > 128) throw new RangeError('verifier length must be 43-128');
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += chars[bytes[i] % chars.length];
+  return out;
+}
+
+async function pkceChallenge(verifier) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return base64urlFromBytes(buf);
+}
+
+function clampInt(v, lo, hi) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+// ============================================================
+// Settings (P0)
+// ============================================================
 const DEFAULTS = Object.freeze({
-  anthropicKey:     '',
-  anthropicModel:   'claude-sonnet-4-6',
-  ttsProvider:      'browser',
-  elevenLabsKey:    '',
+  anthropicKey:    '',
+  anthropicModel:  'claude-sonnet-4-6',
+  ttsProvider:     'browser',
+  elevenLabsKey:   '',
   elevenLabsVoice: '',
-  openAiKey:        '',
-  rssFeed:          'https://www.nrk.no/toppsaker.rss',
-  mixRatio:         30,
+  openAiKey:       '',
+  rssFeed:         'https://www.nrk.no/toppsaker.rss',
+  mixRatio:        30,
 });
 
 function loadSettings() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULTS };
-    const parsed = JSON.parse(raw);
-    // Merge with defaults so newly added keys get sensible values.
-    return { ...DEFAULTS, ...parsed };
+    return { ...DEFAULTS, ...JSON.parse(raw) };
   } catch (e) {
     console.warn('[settings] load failed, using defaults:', e);
     return { ...DEFAULTS };
   }
 }
+function saveSettings(s) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
 
-function saveSettings(s) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+// ============================================================
+// Auth — token persistence
+// ============================================================
+function loadAuth() {
+  try {
+    const raw = localStorage.getItem(AUTH_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveAuth(a) { localStorage.setItem(AUTH_KEY, JSON.stringify(a)); }
+function clearAuth() {
+  localStorage.removeItem(AUTH_KEY);
+  if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
+  _profile = null;
 }
 
+let _profile = null;
+let _refreshTimer = null;
+
+// ============================================================
+// PKCE login flow
+// ============================================================
+async function login() {
+  if (!REDIRECT_URI) {
+    setAccountStatus('Cannot log in: page origin does not match a registered redirect URI. Use the Pages URL or http://127.0.0.1:5173/', 'err');
+    return;
+  }
+  const verifier  = pkceVerifier(64);
+  const challenge = await pkceChallenge(verifier);
+  const state     = pkceVerifier(43);
+  sessionStorage.setItem(PKCE_VERIFIER_SS_KEY, verifier);
+  sessionStorage.setItem(PKCE_STATE_SS_KEY, state);
+  const params = new URLSearchParams({
+    client_id:             CLIENT_ID,
+    response_type:         'code',
+    redirect_uri:          REDIRECT_URI,
+    scope:                 SCOPES.join(' '),
+    code_challenge_method: 'S256',
+    code_challenge:        challenge,
+    state,
+    show_dialog:           'false',
+  });
+  location.assign(`${SPOTIFY_AUTHORIZE_URL}?${params}`);
+}
+
+async function handleRedirectCallback() {
+  const url   = new URL(location.href);
+  const code  = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  const err   = url.searchParams.get('error');
+  if (!code && !err) return false;
+
+  // Clean URL immediately so refresh doesn't reuse the code.
+  url.searchParams.delete('code');
+  url.searchParams.delete('state');
+  url.searchParams.delete('error');
+  history.replaceState({}, '', url.toString());
+
+  if (err) {
+    setAccountStatus(`Spotify returned error: ${err}`, 'err');
+    return false;
+  }
+
+  const expectedState = sessionStorage.getItem(PKCE_STATE_SS_KEY);
+  const verifier      = sessionStorage.getItem(PKCE_VERIFIER_SS_KEY);
+  sessionStorage.removeItem(PKCE_STATE_SS_KEY);
+  sessionStorage.removeItem(PKCE_VERIFIER_SS_KEY);
+
+  if (!verifier) {
+    setAccountStatus('Missing PKCE verifier (sessionStorage cleared between authorize and redirect?). Try logging in again.', 'err');
+    return false;
+  }
+  if (state !== expectedState) {
+    setAccountStatus('State mismatch — possible CSRF. Aborted.', 'err');
+    return false;
+  }
+
+  try {
+    setAccountStatus('Exchanging authorization code for token…', 'warn');
+    const tok = await exchangeCodeForToken(code, verifier);
+    saveAuth({
+      accessToken:  tok.access_token,
+      refreshToken: tok.refresh_token,
+      expiresAt:    Date.now() + tok.expires_in * 1000,
+      scope:        tok.scope,
+      tokenType:    tok.token_type,
+    });
+    return true;
+  } catch (e) {
+    setAccountStatus(`Token exchange failed: ${e.message}`, 'err');
+    return false;
+  }
+}
+
+async function exchangeCodeForToken(code, verifier) {
+  const body = new URLSearchParams({
+    grant_type:    'authorization_code',
+    code,
+    redirect_uri:  REDIRECT_URI,
+    client_id:     CLIENT_ID,
+    code_verifier: verifier,
+  });
+  const r = await fetch(SPOTIFY_TOKEN_URL, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function refreshAccessToken() {
+  const auth = loadAuth();
+  if (!auth || !auth.refreshToken) throw new Error('no refresh token to use');
+  const body = new URLSearchParams({
+    grant_type:    'refresh_token',
+    refresh_token: auth.refreshToken,
+    client_id:     CLIENT_ID,
+  });
+  const r = await fetch(SPOTIFY_TOKEN_URL, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+  const tok = await r.json();
+  saveAuth({
+    accessToken:  tok.access_token,
+    refreshToken: tok.refresh_token || auth.refreshToken, // Spotify may rotate; keep old if absent
+    expiresAt:    Date.now() + tok.expires_in * 1000,
+    scope:        tok.scope || auth.scope,
+    tokenType:    tok.token_type || auth.tokenType,
+  });
+  return tok;
+}
+
+function scheduleRefresh() {
+  if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
+  const auth = loadAuth();
+  if (!auth) return;
+  const refreshIn = auth.expiresAt - Date.now() - 60_000; // 1 min before expiry
+  if (refreshIn <= 0) {
+    refreshAccessToken()
+      .then(() => { scheduleRefresh(); renderAccount(); })
+      .catch(e => setAccountStatus(`Auto-refresh failed: ${e.message}`, 'err'));
+    return;
+  }
+  _refreshTimer = setTimeout(() => {
+    refreshAccessToken()
+      .then(() => { scheduleRefresh(); renderAccount(); })
+      .catch(e => setAccountStatus(`Auto-refresh failed: ${e.message}`, 'err'));
+  }, refreshIn);
+}
+
+async function fetchProfile() {
+  const auth = loadAuth();
+  if (!auth) return null;
+  let r = await fetch(SPOTIFY_ME_URL, { headers: { Authorization: `Bearer ${auth.accessToken}` } });
+  if (r.status === 401) {
+    await refreshAccessToken();
+    const auth2 = loadAuth();
+    r = await fetch(SPOTIFY_ME_URL, { headers: { Authorization: `Bearer ${auth2.accessToken}` } });
+  }
+  if (!r.ok) throw new Error(`/v1/me HTTP ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+// ============================================================
+// Form rendering — Settings (P0)
+// ============================================================
 function readForm() {
   return {
     anthropicKey:    document.getElementById('set-anthropic-key').value.trim(),
@@ -248,12 +491,6 @@ function writeForm(s) {
   applyTtsProviderVisibility(s.ttsProvider);
 }
 
-function clampInt(v, lo, hi) {
-  const n = parseInt(v, 10);
-  if (!Number.isFinite(n)) return lo;
-  return Math.max(lo, Math.min(hi, n));
-}
-
 function applyTtsProviderVisibility(provider) {
   document.getElementById('row-elevenlabs-key').style.display   = (provider === 'elevenlabs') ? '' : 'none';
   document.getElementById('row-elevenlabs-voice').style.display = (provider === 'elevenlabs') ? '' : 'none';
@@ -266,23 +503,112 @@ function setStatus(msg, level) {
   el.className = 'status' + (level ? ' ' + level : '');
 }
 
+// ============================================================
+// Account UI
+// ============================================================
+function setAccountStatus(msg, level) {
+  const el = document.getElementById('acc-status');
+  el.textContent = msg;
+  el.className = 'status' + (level ? ' ' + level : '');
+}
+
+function formatMs(ms) {
+  if (ms <= 0) return 'expired';
+  const sec = Math.floor(ms / 1000);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s}s`;
+}
+
+function renderAccount() {
+  const auth = loadAuth();
+  const loginBtn   = document.getElementById('btn-login');
+  const logoutBtn  = document.getElementById('btn-logout');
+  const refreshBtn = document.getElementById('btn-refresh-now');
+  const rowName    = document.getElementById('row-display-name');
+  const rowExp     = document.getElementById('row-token-expiry');
+  const rowScopes  = document.getElementById('row-granted-scopes');
+
+  if (!auth) {
+    loginBtn.style.display    = '';
+    logoutBtn.style.display   = 'none';
+    refreshBtn.style.display  = 'none';
+    rowName.style.display     = 'none';
+    rowExp.style.display      = 'none';
+    rowScopes.style.display   = 'none';
+    if (!REDIRECT_URI) {
+      setAccountStatus('Disconnected. Cannot log in from this origin — see Environment.', 'warn');
+      loginBtn.disabled = true;
+    } else {
+      setAccountStatus('Disconnected.', '');
+      loginBtn.disabled = false;
+    }
+    return;
+  }
+
+  loginBtn.style.display    = 'none';
+  logoutBtn.style.display   = '';
+  refreshBtn.style.display  = '';
+  rowExp.style.display      = '';
+  rowScopes.style.display   = '';
+
+  // Token expiry line
+  const remaining = auth.expiresAt - Date.now();
+  document.getElementById('acc-token-expiry').textContent =
+    `${formatMs(remaining)} until refresh (expires at ${new Date(auth.expiresAt).toLocaleTimeString()})`;
+
+  // Granted scopes — verify all 7 requested are present
+  const granted = (auth.scope || '').split(' ').filter(Boolean);
+  const missing = SCOPES.filter(s => !granted.includes(s));
+  const scopesEl = document.getElementById('acc-granted-scopes');
+  scopesEl.textContent = granted.join(' ');
+  if (missing.length) {
+    scopesEl.textContent += `   ⚠ missing: ${missing.join(', ')}`;
+    scopesEl.style.color = 'var(--warn)';
+  } else {
+    scopesEl.style.color = '';
+  }
+
+  // Profile
+  if (_profile) {
+    rowName.style.display = '';
+    const av = document.getElementById('acc-avatar');
+    const img = _profile.images?.[0]?.url;
+    if (img) { av.src = img; av.style.display = ''; } else { av.style.display = 'none'; }
+    document.getElementById('acc-display-name').textContent = _profile.display_name || _profile.id || '(no name)';
+    document.getElementById('acc-product').textContent =
+      `(${_profile.product || 'unknown'} · ${_profile.country || '??'})`;
+    setAccountStatus('Connected.', 'ok');
+  } else {
+    setAccountStatus('Token present — fetching profile…', 'warn');
+  }
+}
+
+// ============================================================
+// Debug panel — redact anything that smells like a credential
+// ============================================================
+function redactCredentials(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const out = Array.isArray(obj) ? [] : {};
+  for (const k of Object.keys(obj)) {
+    let v = obj[k];
+    if (typeof v === 'string' && /key|token|secret|refresh/i.test(k) && v) {
+      v = `(${v.length} chars, redacted)`;
+    } else if (v && typeof v === 'object') {
+      v = redactCredentials(v);
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
 function renderDebugStorage() {
   const out = {};
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     let v = localStorage.getItem(k);
     try { v = JSON.parse(v); } catch (_) {}
-    // Redact obvious key-shaped values so we don't print them in plaintext.
-    if (v && typeof v === 'object') {
-      const redacted = { ...v };
-      for (const key of Object.keys(redacted)) {
-        if (/key$/i.test(key) && typeof redacted[key] === 'string' && redacted[key]) {
-          redacted[key] = redacted[key].slice(0, 4) + '…' + redacted[key].slice(-2) + ' (redacted)';
-        }
-      }
-      v = redacted;
-    }
-    out[k] = v;
+    out[k] = (v && typeof v === 'object') ? redactCredentials(v) : v;
   }
   document.getElementById('debug-storage').textContent =
     Object.keys(out).length ? JSON.stringify(out, null, 2) : '(empty)';
@@ -291,51 +617,108 @@ function renderDebugStorage() {
 // ============================================================
 // Init
 // ============================================================
-function init() {
+async function init() {
   // Env panel
   document.getElementById('env-client-id').textContent = CLIENT_ID;
+  const redirEl = document.getElementById('env-redirect-uri');
   if (REDIRECT_URI) {
-    document.getElementById('env-redirect-uri').textContent = REDIRECT_URI;
+    redirEl.textContent = REDIRECT_URI;
   } else {
-    const el = document.getElementById('env-redirect-uri');
-    el.textContent = `(no match for origin "${location.origin}") — open via https://fliptemprr.github.io/Spotify-radio/ or http://127.0.0.1:5173/`;
-    el.style.color = 'var(--warn)';
+    redirEl.textContent = `(no match for origin "${location.origin}") — open via https://fliptemprr.github.io/Spotify-radio/ or http://127.0.0.1:5173/`;
+    redirEl.style.color = 'var(--warn)';
   }
 
-  // Load + render settings
+  // Settings form
   const s = loadSettings();
   writeForm(s);
 
-  // Wire events
+  // Settings event wiring
   document.getElementById('set-tts-provider').addEventListener('change', e => {
     applyTtsProviderVisibility(e.target.value);
   });
   document.getElementById('set-mix-ratio').addEventListener('input', e => {
     document.getElementById('set-mix-ratio-val').textContent = e.target.value + '% new';
   });
-
   document.getElementById('btn-save').addEventListener('click', () => {
     const next = readForm();
     saveSettings(next);
-    writeForm(next);            // re-render canonicalised values
+    writeForm(next);
     renderDebugStorage();
     setStatus('Saved to localStorage.', 'ok');
   });
-
   document.getElementById('btn-reset').addEventListener('click', () => {
     writeForm({ ...DEFAULTS });
     setStatus('Form reset to defaults — click Save to persist.', 'warn');
   });
-
   document.getElementById('btn-clear').addEventListener('click', () => {
-    if (!confirm('Wipe ALL stored data for this site? (settings, future auth tokens, caches)')) return;
+    if (!confirm('Wipe ALL stored data for this site? (settings, auth tokens, caches)')) return;
     localStorage.clear();
     writeForm({ ...DEFAULTS });
+    _profile = null;
+    if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
+    renderAccount();
     renderDebugStorage();
     setStatus('All localStorage cleared.', 'warn');
   });
 
+  // Account event wiring
+  document.getElementById('btn-login').addEventListener('click', () => login());
+  document.getElementById('btn-logout').addEventListener('click', () => {
+    clearAuth();
+    renderAccount();
+    renderDebugStorage();
+  });
+  document.getElementById('btn-refresh-now').addEventListener('click', async () => {
+    try {
+      setAccountStatus('Refreshing token manually…', 'warn');
+      await refreshAccessToken();
+      scheduleRefresh();
+      renderAccount();
+      renderDebugStorage();
+      setAccountStatus('Token refreshed.', 'ok');
+    } catch (e) {
+      setAccountStatus(`Refresh failed: ${e.message}`, 'err');
+    }
+  });
+
+  // Handle ?code=... redirect from Spotify
+  const handled = await handleRedirectCallback();
+  if (handled) {
+    scheduleRefresh();
+  }
+
+  // Initial account render based on stored token (if any)
+  renderAccount();
   renderDebugStorage();
+
+  // Live countdown for the access-token expiry line
+  setInterval(() => {
+    if (loadAuth()) {
+      const auth = loadAuth();
+      const remaining = auth.expiresAt - Date.now();
+      const el = document.getElementById('acc-token-expiry');
+      if (el && document.getElementById('row-token-expiry').style.display !== 'none') {
+        el.textContent =
+          `${formatMs(remaining)} until refresh (expires at ${new Date(auth.expiresAt).toLocaleTimeString()})`;
+      }
+    }
+  }, 1000);
+
+  // If we have a token but no profile yet, fetch it
+  if (loadAuth() && !_profile) {
+    try {
+      _profile = await fetchProfile();
+      scheduleRefresh();
+      renderAccount();
+      renderDebugStorage();
+    } catch (e) {
+      setAccountStatus(`Profile fetch failed: ${e.message} — clearing token.`, 'err');
+      clearAuth();
+      renderAccount();
+      renderDebugStorage();
+    }
+  }
+
   setStatus('Ready.', '');
 }
 

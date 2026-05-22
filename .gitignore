@@ -10,6 +10,7 @@ config.local.*
 # Editor / OS junk
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 *.swp
