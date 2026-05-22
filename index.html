@@ -53,6 +53,7 @@
     padding: 9px 14px; font-weight: 600; cursor: pointer; font: inherit;
   }
   button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  button.icon { padding: 6px 10px; min-width: 38px; }
   button:disabled { opacity: .5; cursor: not-allowed; }
   .toolbar { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   .status { font-size: 12px; color: var(--muted); }
@@ -73,12 +74,41 @@
   }
   .display-name { font-weight: 600; }
   .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+
+  /* Player */
+  .now-playing { display: flex; gap: 14px; align-items: center; margin: 6px 0 12px; }
+  .now-art {
+    width: 64px; height: 64px; border-radius: 6px; background: var(--panel-2);
+    border: 1px solid var(--border); flex-shrink: 0; object-fit: cover;
+  }
+  .now-meta { flex: 1; min-width: 0; }
+  .now-title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .now-artist { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .position-row { display: flex; align-items: center; gap: 10px; }
+  .position-bar {
+    flex: 1; height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden;
+  }
+  .position-fill { height: 100%; background: var(--accent-2); width: 0%; transition: width .2s linear; }
+  .time { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--muted); min-width: 44px; text-align: center; }
+
+  /* Playlist list */
+  .pl-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .pl-card {
+    display: flex; gap: 10px; align-items: center; padding: 8px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    min-width: 0;
+  }
+  .pl-cover { width: 48px; height: 48px; border-radius: 4px; background: var(--bg); flex-shrink: 0; object-fit: cover; }
+  .pl-info { flex: 1; min-width: 0; }
+  .pl-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-meta { color: var(--muted); font-size: 12px; }
+  .pl-card button { padding: 6px 10px; font-size: 12px; }
 </style>
 </head>
 <body>
   <header>
-    <h1>AI Radio Host <span class="pill">P1</span></h1>
-    <div class="phase">Login + profile — no playback yet</div>
+    <h1>AI Radio Host <span class="pill">P2</span></h1>
+    <div class="phase">Player + playlists — heard/new mix arrives in P3</div>
   </header>
   <main>
 
@@ -105,6 +135,52 @@
         <button id="btn-logout" class="secondary" style="display:none">Log out</button>
         <button id="btn-refresh-now" class="secondary" style="display:none" title="Manually refresh the access token now">Refresh token now</button>
       </div>
+    </section>
+
+    <section id="section-player">
+      <h2>Player</h2>
+      <div class="row">
+        <label>Device status</label>
+        <div id="player-status" class="status">…</div>
+      </div>
+      <div class="row" id="row-device-id" style="display:none">
+        <label>Device ID</label>
+        <div id="player-device-id" class="mono">…</div>
+      </div>
+
+      <div class="now-playing" id="now-playing" style="display:none">
+        <img id="now-art" class="now-art" alt="">
+        <div class="now-meta">
+          <div class="now-title" id="now-title">—</div>
+          <div class="now-artist" id="now-artist">—</div>
+          <div class="position-row">
+            <span class="time" id="now-pos">0:00</span>
+            <div class="position-bar"><div id="now-fill" class="position-fill"></div></div>
+            <span class="time" id="now-dur">0:00</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="toolbar" id="player-controls" style="display:none">
+        <button id="btn-prev" class="icon secondary" title="Previous track">⏮</button>
+        <button id="btn-playpause" class="icon" title="Play / Pause">▶</button>
+        <button id="btn-next" class="icon secondary" title="Next track">⏭</button>
+        <button id="btn-transfer" class="secondary" title="Transfer playback to this device">Transfer playback here</button>
+        <span id="player-msg" class="status"></span>
+      </div>
+
+      <div class="status" style="margin-top:10px">
+        Audio plays through this browser tab. If you hear nothing, click <em>Transfer playback here</em>. Premium account required.
+      </div>
+    </section>
+
+    <section id="section-playlists">
+      <h2>Playlists</h2>
+      <div class="toolbar" style="margin: 0 0 12px 0">
+        <button id="btn-load-playlists" class="secondary">Load playlists</button>
+        <span id="playlists-status" class="status"></span>
+      </div>
+      <div id="pl-list" class="pl-list"></div>
     </section>
 
     <section>
@@ -190,7 +266,6 @@
         <pre id="debug-storage" style="background:var(--panel-2);padding:10px;border-radius:6px;overflow:auto;max-height:280px;font-size:12px"></pre>
       </details>
       <div class="status" style="margin-top:8px">
-        Token + refresh_token stay in localStorage so reload preserves login.
         Tokens are redacted in the debug panel above (length-only).
       </div>
     </section>
@@ -230,7 +305,8 @@ const SCOPES = [
 
 const SPOTIFY_AUTHORIZE_URL = 'https://accounts.spotify.com/authorize';
 const SPOTIFY_TOKEN_URL     = 'https://accounts.spotify.com/api/token';
-const SPOTIFY_ME_URL        = 'https://api.spotify.com/v1/me';
+const SPOTIFY_API           = 'https://api.spotify.com/v1';
+const SDK_URL               = 'https://sdk.scdn.co/spotify-player.js';
 
 const SETTINGS_KEY = 'spotifyRadio.settings.v1';
 const AUTH_KEY     = 'spotifyRadio.auth.v1';
@@ -238,7 +314,7 @@ const PKCE_VERIFIER_SS_KEY = 'spotifyRadio.pkce.verifier';
 const PKCE_STATE_SS_KEY    = 'spotifyRadio.pkce.state';
 
 // ============================================================
-// PURE FUNCTIONS — testable in isolation
+// PURE FUNCTIONS — testable
 // ============================================================
 function base64urlFromBytes(bytes) {
   let s = '';
@@ -248,7 +324,6 @@ function base64urlFromBytes(bytes) {
 }
 
 function pkceVerifier(length = 64) {
-  // RFC 7636: 43-128 chars from [A-Z a-z 0-9 - . _ ~]
   if (length < 43 || length > 128) throw new RangeError('verifier length must be 43-128');
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
   const bytes = new Uint8Array(length);
@@ -267,6 +342,12 @@ function clampInt(v, lo, hi) {
   const n = parseInt(v, 10);
   if (!Number.isFinite(n)) return lo;
   return Math.max(lo, Math.min(hi, n));
+}
+
+function formatTime(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '0:00';
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 // ============================================================
@@ -288,15 +369,12 @@ function loadSettings() {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULTS };
     return { ...DEFAULTS, ...JSON.parse(raw) };
-  } catch (e) {
-    console.warn('[settings] load failed, using defaults:', e);
-    return { ...DEFAULTS };
-  }
+  } catch (e) { return { ...DEFAULTS }; }
 }
 function saveSettings(s) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
 
 // ============================================================
-// Auth — token persistence
+// Auth (P1)
 // ============================================================
 function loadAuth() {
   try {
@@ -314,9 +392,6 @@ function clearAuth() {
 let _profile = null;
 let _refreshTimer = null;
 
-// ============================================================
-// PKCE login flow
-// ============================================================
 async function login() {
   if (!REDIRECT_URI) {
     setAccountStatus('Cannot log in: page origin does not match a registered redirect URI. Use the Pages URL or http://127.0.0.1:5173/', 'err');
@@ -341,36 +416,26 @@ async function login() {
 }
 
 async function handleRedirectCallback() {
-  const url   = new URL(location.href);
-  const code  = url.searchParams.get('code');
+  const url = new URL(location.href);
+  const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
-  const err   = url.searchParams.get('error');
+  const err = url.searchParams.get('error');
   if (!code && !err) return false;
 
-  // Clean URL immediately so refresh doesn't reuse the code.
   url.searchParams.delete('code');
   url.searchParams.delete('state');
   url.searchParams.delete('error');
   history.replaceState({}, '', url.toString());
 
-  if (err) {
-    setAccountStatus(`Spotify returned error: ${err}`, 'err');
-    return false;
-  }
+  if (err) { setAccountStatus(`Spotify returned error: ${err}`, 'err'); return false; }
 
   const expectedState = sessionStorage.getItem(PKCE_STATE_SS_KEY);
   const verifier      = sessionStorage.getItem(PKCE_VERIFIER_SS_KEY);
   sessionStorage.removeItem(PKCE_STATE_SS_KEY);
   sessionStorage.removeItem(PKCE_VERIFIER_SS_KEY);
 
-  if (!verifier) {
-    setAccountStatus('Missing PKCE verifier (sessionStorage cleared between authorize and redirect?). Try logging in again.', 'err');
-    return false;
-  }
-  if (state !== expectedState) {
-    setAccountStatus('State mismatch — possible CSRF. Aborted.', 'err');
-    return false;
-  }
+  if (!verifier)              { setAccountStatus('Missing PKCE verifier. Try logging in again.', 'err'); return false; }
+  if (state !== expectedState) { setAccountStatus('State mismatch — possible CSRF. Aborted.', 'err');     return false; }
 
   try {
     setAccountStatus('Exchanging authorization code for token…', 'warn');
@@ -392,15 +457,10 @@ async function handleRedirectCallback() {
 async function exchangeCodeForToken(code, verifier) {
   const body = new URLSearchParams({
     grant_type:    'authorization_code',
-    code,
-    redirect_uri:  REDIRECT_URI,
-    client_id:     CLIENT_ID,
-    code_verifier: verifier,
+    code, redirect_uri: REDIRECT_URI, client_id: CLIENT_ID, code_verifier: verifier,
   });
   const r = await fetch(SPOTIFY_TOKEN_URL, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
   return r.json();
@@ -410,20 +470,16 @@ async function refreshAccessToken() {
   const auth = loadAuth();
   if (!auth || !auth.refreshToken) throw new Error('no refresh token to use');
   const body = new URLSearchParams({
-    grant_type:    'refresh_token',
-    refresh_token: auth.refreshToken,
-    client_id:     CLIENT_ID,
+    grant_type: 'refresh_token', refresh_token: auth.refreshToken, client_id: CLIENT_ID,
   });
   const r = await fetch(SPOTIFY_TOKEN_URL, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
   const tok = await r.json();
   saveAuth({
     accessToken:  tok.access_token,
-    refreshToken: tok.refresh_token || auth.refreshToken, // Spotify may rotate; keep old if absent
+    refreshToken: tok.refresh_token || auth.refreshToken,
     expiresAt:    Date.now() + tok.expires_in * 1000,
     scope:        tok.scope || auth.scope,
     tokenType:    tok.token_type || auth.tokenType,
@@ -435,16 +491,14 @@ function scheduleRefresh() {
   if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
   const auth = loadAuth();
   if (!auth) return;
-  const refreshIn = auth.expiresAt - Date.now() - 60_000; // 1 min before expiry
+  const refreshIn = auth.expiresAt - Date.now() - 60_000;
   if (refreshIn <= 0) {
-    refreshAccessToken()
-      .then(() => { scheduleRefresh(); renderAccount(); })
+    refreshAccessToken().then(() => { scheduleRefresh(); renderAccount(); })
       .catch(e => setAccountStatus(`Auto-refresh failed: ${e.message}`, 'err'));
     return;
   }
   _refreshTimer = setTimeout(() => {
-    refreshAccessToken()
-      .then(() => { scheduleRefresh(); renderAccount(); })
+    refreshAccessToken().then(() => { scheduleRefresh(); renderAccount(); })
       .catch(e => setAccountStatus(`Auto-refresh failed: ${e.message}`, 'err'));
   }, refreshIn);
 }
@@ -452,18 +506,193 @@ function scheduleRefresh() {
 async function fetchProfile() {
   const auth = loadAuth();
   if (!auth) return null;
-  let r = await fetch(SPOTIFY_ME_URL, { headers: { Authorization: `Bearer ${auth.accessToken}` } });
+  let r = await fetch(`${SPOTIFY_API}/me`, { headers: { Authorization: `Bearer ${auth.accessToken}` } });
   if (r.status === 401) {
     await refreshAccessToken();
-    const auth2 = loadAuth();
-    r = await fetch(SPOTIFY_ME_URL, { headers: { Authorization: `Bearer ${auth2.accessToken}` } });
+    r = await fetch(`${SPOTIFY_API}/me`, { headers: { Authorization: `Bearer ${loadAuth().accessToken}` } });
   }
   if (!r.ok) throw new Error(`/v1/me HTTP ${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 // ============================================================
-// Form rendering — Settings (P0)
+// Spotify Web API — small helper
+// ============================================================
+async function spotifyFetch(path, opts = {}) {
+  const auth = loadAuth();
+  if (!auth) throw new Error('not logged in');
+  const url = path.startsWith('http') ? path : `${SPOTIFY_API}${path}`;
+  let r = await fetch(url, {
+    ...opts,
+    headers: { ...(opts.headers || {}), Authorization: `Bearer ${auth.accessToken}` },
+  });
+  if (r.status === 401) {
+    await refreshAccessToken();
+    r = await fetch(url, {
+      ...opts,
+      headers: { ...(opts.headers || {}), Authorization: `Bearer ${loadAuth().accessToken}` },
+    });
+  }
+  if (!r.ok && r.status !== 204) throw new Error(`${path} HTTP ${r.status}: ${await r.text()}`);
+  if (r.status === 204) return null;
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
+}
+
+// ============================================================
+// Web Playback SDK (P2)
+// ============================================================
+let _player        = null;
+let _deviceId      = null;
+let _playerState   = null;  // latest player_state_changed payload
+let _sdkLoadingPromise = null;
+
+function loadSpotifySdk() {
+  if (window.Spotify) return Promise.resolve(window.Spotify);
+  if (_sdkLoadingPromise) return _sdkLoadingPromise;
+  _sdkLoadingPromise = new Promise((resolve, reject) => {
+    window.onSpotifyWebPlaybackSDKReady = () => resolve(window.Spotify);
+    const s = document.createElement('script');
+    s.src = SDK_URL;
+    s.async = true;
+    s.onerror = () => reject(new Error('Failed to load Spotify Web Playback SDK from CDN'));
+    document.head.appendChild(s);
+  });
+  return _sdkLoadingPromise;
+}
+
+async function initPlayer() {
+  if (_player) return _player;
+  if (!loadAuth()) throw new Error('not logged in');
+
+  setPlayerStatus('Loading Web Playback SDK…', 'warn');
+  await loadSpotifySdk();
+
+  setPlayerStatus('Initializing player…', 'warn');
+  _player = new Spotify.Player({
+    name: 'AI Radio Host',
+    getOAuthToken: async (cb) => {
+      let auth = loadAuth();
+      if (!auth) { cb(null); return; }
+      if (auth.expiresAt - Date.now() < 30_000) {
+        try { await refreshAccessToken(); auth = loadAuth(); } catch (_) {}
+      }
+      cb(auth?.accessToken || null);
+    },
+    volume: 0.5,
+  });
+
+  _player.addListener('ready', ({ device_id }) => {
+    _deviceId = device_id;
+    setPlayerStatus(`Ready (this tab is now a Spotify Connect device).`, 'ok');
+    renderPlayer();
+  });
+  _player.addListener('not_ready', ({ device_id }) => {
+    if (_deviceId === device_id) _deviceId = null;
+    setPlayerStatus('Device went offline.', 'warn');
+    renderPlayer();
+  });
+  _player.addListener('player_state_changed', state => {
+    _playerState = state;
+    renderPlayer();
+  });
+  for (const evt of ['initialization_error', 'authentication_error', 'account_error', 'playback_error']) {
+    _player.addListener(evt, ({ message }) => {
+      setPlayerStatus(`${evt}: ${message}`, 'err');
+    });
+  }
+
+  const ok = await _player.connect();
+  if (!ok) throw new Error('player.connect() returned false');
+  return _player;
+}
+
+async function disconnectPlayer() {
+  if (_player) {
+    try { await _player.disconnect(); } catch (_) {}
+  }
+  _player = null;
+  _deviceId = null;
+  _playerState = null;
+}
+
+async function transferPlaybackHere(autoplay = false) {
+  if (!_deviceId) throw new Error('device not ready');
+  await spotifyFetch('/me/player', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_ids: [_deviceId], play: autoplay }),
+  });
+}
+
+async function playContext(contextUri) {
+  if (!_deviceId) {
+    setPlayerStatus('Device not ready yet — wait a moment, then try again.', 'warn');
+    return;
+  }
+  // Transfer first so the play call targets THIS tab.
+  await transferPlaybackHere(false).catch(() => {});
+  await spotifyFetch(`/me/player/play?device_id=${_deviceId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context_uri: contextUri }),
+  });
+}
+
+// ============================================================
+// Playlists (P2)
+// ============================================================
+let _playlists = [];
+
+async function fetchPlaylists() {
+  const all = [];
+  let url = `${SPOTIFY_API}/me/playlists?limit=50`;
+  while (url && all.length < 200) {
+    const data = await spotifyFetch(url);
+    if (!data || !data.items) break;
+    all.push(...data.items);
+    url = data.next;
+  }
+  return all;
+}
+
+function renderPlaylists() {
+  const list = document.getElementById('pl-list');
+  list.innerHTML = '';
+  if (!_playlists.length) {
+    list.innerHTML = '<div class="status">No playlists loaded yet.</div>';
+    return;
+  }
+  for (const p of _playlists) {
+    if (!p) continue;
+    const card = document.createElement('div');
+    card.className = 'pl-card';
+    const cover = p.images?.[0]?.url || '';
+    card.innerHTML = `
+      <img class="pl-cover" alt="" src="${cover}">
+      <div class="pl-info">
+        <div class="pl-name"></div>
+        <div class="pl-meta"></div>
+      </div>
+      <button data-uri="${p.uri}">Play</button>
+    `;
+    card.querySelector('.pl-name').textContent  = p.name || '(untitled)';
+    card.querySelector('.pl-meta').textContent  = `${p.tracks?.total ?? '?'} tracks · ${p.owner?.display_name || ''}`;
+    card.querySelector('button').addEventListener('click', async () => {
+      try {
+        setPlayerMsg(`Starting "${p.name}"…`, 'warn');
+        await playContext(p.uri);
+        setPlayerMsg('', '');
+      } catch (e) {
+        setPlayerMsg(`Play failed: ${e.message}`, 'err');
+      }
+    });
+    list.appendChild(card);
+  }
+}
+
+// ============================================================
+// Form (P0)
 // ============================================================
 function readForm() {
   return {
@@ -477,7 +706,6 @@ function readForm() {
     mixRatio:        clampInt(document.getElementById('set-mix-ratio').value, 0, 100),
   };
 }
-
 function writeForm(s) {
   document.getElementById('set-anthropic-key').value    = s.anthropicKey;
   document.getElementById('set-anthropic-model').value  = s.anthropicModel;
@@ -490,13 +718,11 @@ function writeForm(s) {
   document.getElementById('set-mix-ratio-val').textContent = s.mixRatio + '% new';
   applyTtsProviderVisibility(s.ttsProvider);
 }
-
 function applyTtsProviderVisibility(provider) {
   document.getElementById('row-elevenlabs-key').style.display   = (provider === 'elevenlabs') ? '' : 'none';
   document.getElementById('row-elevenlabs-voice').style.display = (provider === 'elevenlabs') ? '' : 'none';
   document.getElementById('row-openai-key').style.display       = (provider === 'openai')     ? '' : 'none';
 }
-
 function setStatus(msg, level) {
   const el = document.getElementById('save-status');
   el.textContent = msg;
@@ -504,22 +730,18 @@ function setStatus(msg, level) {
 }
 
 // ============================================================
-// Account UI
+// UI — Account
 // ============================================================
 function setAccountStatus(msg, level) {
   const el = document.getElementById('acc-status');
   el.textContent = msg;
   el.className = 'status' + (level ? ' ' + level : '');
 }
-
 function formatMs(ms) {
   if (ms <= 0) return 'expired';
   const sec = Math.floor(ms / 1000);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}m ${s}s`;
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`;
 }
-
 function renderAccount() {
   const auth = loadAuth();
   const loginBtn   = document.getElementById('btn-login');
@@ -530,12 +752,12 @@ function renderAccount() {
   const rowScopes  = document.getElementById('row-granted-scopes');
 
   if (!auth) {
-    loginBtn.style.display    = '';
-    logoutBtn.style.display   = 'none';
-    refreshBtn.style.display  = 'none';
-    rowName.style.display     = 'none';
-    rowExp.style.display      = 'none';
-    rowScopes.style.display   = 'none';
+    loginBtn.style.display   = '';
+    logoutBtn.style.display  = 'none';
+    refreshBtn.style.display = 'none';
+    rowName.style.display    = 'none';
+    rowExp.style.display     = 'none';
+    rowScopes.style.display  = 'none';
     if (!REDIRECT_URI) {
       setAccountStatus('Disconnected. Cannot log in from this origin — see Environment.', 'warn');
       loginBtn.disabled = true;
@@ -546,18 +768,16 @@ function renderAccount() {
     return;
   }
 
-  loginBtn.style.display    = 'none';
-  logoutBtn.style.display   = '';
-  refreshBtn.style.display  = '';
-  rowExp.style.display      = '';
-  rowScopes.style.display   = '';
+  loginBtn.style.display   = 'none';
+  logoutBtn.style.display  = '';
+  refreshBtn.style.display = '';
+  rowExp.style.display     = '';
+  rowScopes.style.display  = '';
 
-  // Token expiry line
   const remaining = auth.expiresAt - Date.now();
   document.getElementById('acc-token-expiry').textContent =
     `${formatMs(remaining)} until refresh (expires at ${new Date(auth.expiresAt).toLocaleTimeString()})`;
 
-  // Granted scopes — verify all 7 requested are present
   const granted = (auth.scope || '').split(' ').filter(Boolean);
   const missing = SCOPES.filter(s => !granted.includes(s));
   const scopesEl = document.getElementById('acc-granted-scopes');
@@ -569,7 +789,6 @@ function renderAccount() {
     scopesEl.style.color = '';
   }
 
-  // Profile
   if (_profile) {
     rowName.style.display = '';
     const av = document.getElementById('acc-avatar');
@@ -585,7 +804,64 @@ function renderAccount() {
 }
 
 // ============================================================
-// Debug panel — redact anything that smells like a credential
+// UI — Player
+// ============================================================
+function setPlayerStatus(msg, level) {
+  const el = document.getElementById('player-status');
+  el.textContent = msg;
+  el.className = 'status' + (level ? ' ' + level : '');
+}
+function setPlayerMsg(msg, level) {
+  const el = document.getElementById('player-msg');
+  el.textContent = msg;
+  el.className = 'status' + (level ? ' ' + level : '');
+}
+
+function renderPlayer() {
+  const rowDev    = document.getElementById('row-device-id');
+  const nowEl     = document.getElementById('now-playing');
+  const controls  = document.getElementById('player-controls');
+
+  if (_deviceId) {
+    rowDev.style.display = '';
+    document.getElementById('player-device-id').textContent = _deviceId;
+    controls.style.display = '';
+  } else {
+    rowDev.style.display = 'none';
+    controls.style.display = 'none';
+  }
+
+  if (_playerState && _playerState.track_window?.current_track) {
+    const t = _playerState.track_window.current_track;
+    nowEl.style.display = '';
+    document.getElementById('now-art').src = t.album?.images?.[0]?.url || '';
+    document.getElementById('now-title').textContent = t.name || '—';
+    document.getElementById('now-artist').textContent =
+      (t.artists || []).map(a => a.name).join(', ') || '—';
+    const pos = _playerState.position;
+    const dur = _playerState.duration;
+    document.getElementById('now-pos').textContent = formatTime(pos);
+    document.getElementById('now-dur').textContent = formatTime(dur);
+    const pct = dur > 0 ? (pos / dur) * 100 : 0;
+    document.getElementById('now-fill').style.width = pct + '%';
+    document.getElementById('btn-playpause').textContent = _playerState.paused ? '▶' : '⏸';
+  } else {
+    nowEl.style.display = 'none';
+  }
+}
+
+// Local clock for position bar between SDK state events (which only fire on change).
+function tickPosition() {
+  if (!_playerState || _playerState.paused) return;
+  const elapsed = Date.now() - (_playerState._timestamp || Date.now());
+  const pos = Math.min(_playerState.duration, _playerState.position + elapsed);
+  document.getElementById('now-pos').textContent = formatTime(pos);
+  const pct = _playerState.duration > 0 ? (pos / _playerState.duration) * 100 : 0;
+  document.getElementById('now-fill').style.width = pct + '%';
+}
+
+// ============================================================
+// Debug
 // ============================================================
 function redactCredentials(obj) {
   if (!obj || typeof obj !== 'object') return obj;
@@ -601,7 +877,6 @@ function redactCredentials(obj) {
   }
   return out;
 }
-
 function renderDebugStorage() {
   const out = {};
   for (let i = 0; i < localStorage.length; i++) {
@@ -618,80 +893,107 @@ function renderDebugStorage() {
 // Init
 // ============================================================
 async function init() {
-  // Env panel
+  // Env
   document.getElementById('env-client-id').textContent = CLIENT_ID;
   const redirEl = document.getElementById('env-redirect-uri');
-  if (REDIRECT_URI) {
-    redirEl.textContent = REDIRECT_URI;
-  } else {
+  if (REDIRECT_URI) redirEl.textContent = REDIRECT_URI;
+  else {
     redirEl.textContent = `(no match for origin "${location.origin}") — open via https://fliptemprr.github.io/Spotify-radio/ or http://127.0.0.1:5173/`;
     redirEl.style.color = 'var(--warn)';
   }
 
-  // Settings form
-  const s = loadSettings();
-  writeForm(s);
-
-  // Settings event wiring
-  document.getElementById('set-tts-provider').addEventListener('change', e => {
-    applyTtsProviderVisibility(e.target.value);
-  });
+  // Settings
+  writeForm(loadSettings());
+  document.getElementById('set-tts-provider').addEventListener('change', e => applyTtsProviderVisibility(e.target.value));
   document.getElementById('set-mix-ratio').addEventListener('input', e => {
     document.getElementById('set-mix-ratio-val').textContent = e.target.value + '% new';
   });
   document.getElementById('btn-save').addEventListener('click', () => {
-    const next = readForm();
-    saveSettings(next);
-    writeForm(next);
-    renderDebugStorage();
+    const next = readForm(); saveSettings(next); writeForm(next); renderDebugStorage();
     setStatus('Saved to localStorage.', 'ok');
   });
   document.getElementById('btn-reset').addEventListener('click', () => {
-    writeForm({ ...DEFAULTS });
-    setStatus('Form reset to defaults — click Save to persist.', 'warn');
+    writeForm({ ...DEFAULTS }); setStatus('Form reset to defaults — click Save to persist.', 'warn');
   });
-  document.getElementById('btn-clear').addEventListener('click', () => {
+  document.getElementById('btn-clear').addEventListener('click', async () => {
     if (!confirm('Wipe ALL stored data for this site? (settings, auth tokens, caches)')) return;
+    await disconnectPlayer();
     localStorage.clear();
     writeForm({ ...DEFAULTS });
     _profile = null;
     if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
-    renderAccount();
-    renderDebugStorage();
+    _playlists = [];
+    renderAccount(); renderPlayer(); renderPlaylists(); renderDebugStorage();
     setStatus('All localStorage cleared.', 'warn');
   });
 
-  // Account event wiring
+  // Account
   document.getElementById('btn-login').addEventListener('click', () => login());
-  document.getElementById('btn-logout').addEventListener('click', () => {
+  document.getElementById('btn-logout').addEventListener('click', async () => {
+    await disconnectPlayer();
     clearAuth();
-    renderAccount();
-    renderDebugStorage();
+    _playlists = [];
+    renderAccount(); renderPlayer(); renderPlaylists(); renderDebugStorage();
   });
   document.getElementById('btn-refresh-now').addEventListener('click', async () => {
     try {
       setAccountStatus('Refreshing token manually…', 'warn');
       await refreshAccessToken();
       scheduleRefresh();
-      renderAccount();
-      renderDebugStorage();
+      renderAccount(); renderDebugStorage();
       setAccountStatus('Token refreshed.', 'ok');
     } catch (e) {
       setAccountStatus(`Refresh failed: ${e.message}`, 'err');
     }
   });
 
-  // Handle ?code=... redirect from Spotify
-  const handled = await handleRedirectCallback();
-  if (handled) {
-    scheduleRefresh();
-  }
+  // Player controls
+  document.getElementById('btn-playpause').addEventListener('click', async () => {
+    if (!_player) return;
+    try { await _player.togglePlay(); } catch (e) { setPlayerMsg(`Toggle play failed: ${e.message}`, 'err'); }
+  });
+  document.getElementById('btn-prev').addEventListener('click', async () => {
+    if (!_player) return;
+    try { await _player.previousTrack(); } catch (e) { setPlayerMsg(`Previous failed: ${e.message}`, 'err'); }
+  });
+  document.getElementById('btn-next').addEventListener('click', async () => {
+    if (!_player) return;
+    try { await _player.nextTrack(); } catch (e) { setPlayerMsg(`Next failed: ${e.message}`, 'err'); }
+  });
+  document.getElementById('btn-transfer').addEventListener('click', async () => {
+    try {
+      await transferPlaybackHere(false);
+      setPlayerMsg('Transferred playback to this tab.', 'ok');
+    } catch (e) {
+      setPlayerMsg(`Transfer failed: ${e.message}`, 'err');
+    }
+  });
 
-  // Initial account render based on stored token (if any)
+  // Playlists
+  document.getElementById('btn-load-playlists').addEventListener('click', async () => {
+    const statusEl = document.getElementById('playlists-status');
+    try {
+      statusEl.textContent = 'Loading…'; statusEl.className = 'status warn';
+      _playlists = await fetchPlaylists();
+      statusEl.textContent = `Loaded ${_playlists.length} playlist(s).`;
+      statusEl.className = 'status ok';
+      renderPlaylists();
+    } catch (e) {
+      statusEl.textContent = `Failed: ${e.message}`;
+      statusEl.className = 'status err';
+    }
+  });
+
+  // OAuth redirect callback
+  const handled = await handleRedirectCallback();
+  if (handled) scheduleRefresh();
+
   renderAccount();
+  renderPlayer();
+  renderPlaylists();
   renderDebugStorage();
 
-  // Live countdown for the access-token expiry line
+  // Live ticking — token expiry + position bar
   setInterval(() => {
     if (loadAuth()) {
       const auth = loadAuth();
@@ -702,20 +1004,37 @@ async function init() {
           `${formatMs(remaining)} until refresh (expires at ${new Date(auth.expiresAt).toLocaleTimeString()})`;
       }
     }
+    tickPosition();
   }, 1000);
 
-  // If we have a token but no profile yet, fetch it
+  // Post-login bring-up: profile → player → playlists
   if (loadAuth() && !_profile) {
     try {
       _profile = await fetchProfile();
       scheduleRefresh();
-      renderAccount();
-      renderDebugStorage();
+      renderAccount(); renderDebugStorage();
+
+      // Spin up player — premium required
+      try {
+        await initPlayer();
+      } catch (e) {
+        setPlayerStatus(`Player init failed: ${e.message}`, 'err');
+      }
+      // Auto-load playlists once after login
+      try {
+        _playlists = await fetchPlaylists();
+        const ps = document.getElementById('playlists-status');
+        ps.textContent = `Loaded ${_playlists.length} playlist(s).`;
+        ps.className = 'status ok';
+        renderPlaylists();
+      } catch (e) {
+        const ps = document.getElementById('playlists-status');
+        ps.textContent = `Playlists failed: ${e.message}`;
+        ps.className = 'status err';
+      }
     } catch (e) {
       setAccountStatus(`Profile fetch failed: ${e.message} — clearing token.`, 'err');
-      clearAuth();
-      renderAccount();
-      renderDebugStorage();
+      clearAuth(); renderAccount(); renderDebugStorage();
     }
   }
 
