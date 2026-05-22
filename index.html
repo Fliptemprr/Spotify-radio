@@ -175,7 +175,7 @@
 const CLIENT_ID = 'faea1a7639724188bad469644b97ceb9';
 
 const REDIRECT_URIS = {
-  pages:  'https://fliptemprr.github.io/spotify-radio/',
+  pages:  'https://fliptemprr.github.io/Spotify-radio/',
   local:  'http://127.0.0.1:5173/',
 };
 
@@ -298,7 +298,7 @@ function init() {
     document.getElementById('env-redirect-uri').textContent = REDIRECT_URI;
   } else {
     const el = document.getElementById('env-redirect-uri');
-    el.textContent = `(no match for origin "${location.origin}") — open via https://fliptemprr.github.io/spotify-radio/ or http://127.0.0.1:5173/`;
+    el.textContent = `(no match for origin "${location.origin}") — open via https://fliptemprr.github.io/Spotify-radio/ or http://127.0.0.1:5173/`;
     el.style.color = 'var(--warn)';
   }
 
