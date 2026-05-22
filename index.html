@@ -113,8 +113,8 @@
 </head>
 <body>
   <header>
-    <h1>AI Radio Host <span class="pill">P5</span></h1>
-    <div class="phase">DJ patter generated in gaps — TTS voicing arrives in P6</div>
+    <h1>AI Radio Host <span class="pill">P6</span></h1>
+    <div class="phase">Voiced DJ patter in gaps — continuous loop arrives in P7</div>
   </header>
   <main>
 
@@ -222,6 +222,8 @@
 
       <div class="toolbar" style="margin-top:6px">
         <button id="btn-test-dj" class="secondary" title="Generate a patter for the next queued track without playing">Test DJ patter (no playback)</button>
+        <button id="btn-test-voice" class="secondary" title="Voice the currently-displayed patter via the configured TTS provider">Test voice (speak current patter)</button>
+        <button id="btn-stop-voice" class="secondary" title="Cancel any in-flight TTS audio">Stop voice</button>
         <span id="dj-msg" class="status"></span>
       </div>
     </section>
@@ -935,6 +937,118 @@ async function buildNewPool(heardSet, count = 30, onProgress = () => {}) {
 }
 
 // ============================================================
+// TTS — three backends behind speak(text). Resolves when audio finishes.
+// ============================================================
+const ELEVENLABS_TTS_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
+const OPENAI_TTS_URL     = 'https://api.openai.com/v1/audio/speech';
+
+let _currentTtsAudio = null;  // ref so stopTts() can cancel mid-flight
+
+function stopTts() {
+  if (window.speechSynthesis) {
+    try { window.speechSynthesis.cancel(); } catch (_) {}
+  }
+  if (_currentTtsAudio) {
+    try { _currentTtsAudio.pause(); } catch (_) {}
+    try { _currentTtsAudio.src = ''; } catch (_) {}
+    _currentTtsAudio = null;
+  }
+}
+
+async function speak(text) {
+  if (!text || !text.trim()) return;
+  const settings = loadSettings();
+  switch (settings.ttsProvider) {
+    case 'elevenlabs':
+      return speakElevenLabs(text, settings.elevenLabsKey, settings.elevenLabsVoice);
+    case 'openai':
+      return speakOpenAI(text, settings.openAiKey);
+    case 'browser':
+    default:
+      return speakBrowser(text);
+  }
+}
+
+function speakBrowser(text) {
+  return new Promise((resolve, reject) => {
+    if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
+      return reject(new Error('SpeechSynthesis not supported in this browser'));
+    }
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate   = 1.0;
+    u.pitch  = 1.0;
+    u.volume = 1.0;
+    // Optional: pick a "natural" English voice if available
+    try {
+      const voices = window.speechSynthesis.getVoices();
+      const en = voices.find(v => /^en[-_]/i.test(v.lang) && /natural|premium|enhanced/i.test(v.name))
+              || voices.find(v => /^en[-_]/i.test(v.lang));
+      if (en) u.voice = en;
+    } catch (_) {}
+    u.onend   = () => resolve();
+    u.onerror = (e) => reject(new Error(`SpeechSynthesis error: ${e.error || 'unknown'}`));
+    try { window.speechSynthesis.cancel(); } catch (_) {}
+    window.speechSynthesis.speak(u);
+  });
+}
+
+async function speakElevenLabs(text, key, voiceId) {
+  if (!key)      throw new Error('ElevenLabs API key not set in Settings');
+  if (!voiceId)  throw new Error('ElevenLabs voice ID not set in Settings');
+  const r = await fetch(`${ELEVENLABS_TTS_URL}/${encodeURIComponent(voiceId)}`, {
+    method: 'POST',
+    headers: {
+      'xi-api-key':   key,
+      'accept':       'audio/mpeg',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      text,
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+    }),
+  });
+  if (!r.ok) throw new Error(`ElevenLabs HTTP ${r.status}: ${await r.text()}`);
+  const blob = await r.blob();
+  return playAudioBlob(blob);
+}
+
+async function speakOpenAI(text, key) {
+  if (!key) throw new Error('OpenAI API key not set in Settings');
+  const r = await fetch(OPENAI_TTS_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${key}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'tts-1',
+      voice: 'alloy',
+      input: text,
+      response_format: 'mp3',
+    }),
+  });
+  if (!r.ok) throw new Error(`OpenAI TTS HTTP ${r.status}: ${await r.text()}`);
+  const blob = await r.blob();
+  return playAudioBlob(blob);
+}
+
+function playAudioBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    _currentTtsAudio = audio;
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      if (_currentTtsAudio === audio) _currentTtsAudio = null;
+    };
+    audio.onended = () => { cleanup(); resolve(); };
+    audio.onerror = () => { cleanup(); reject(new Error('audio playback error')); };
+    audio.play().catch(err => { cleanup(); reject(err); });
+  });
+}
+
+// ============================================================
 // DJ patter — RSS + Claude
 // ============================================================
 async function fetchHeadlines(rssUrl, proxyPrefix = '') {
@@ -1057,6 +1171,7 @@ async function startRadio() {
 
 function stopRadio() {
   _radioActive = false;
+  stopTts();
   updateRadioButtons();
 }
 
@@ -1125,8 +1240,15 @@ async function runGap(reason = 'lead-time') {
       setRadioMsg('Gap: generating DJ patter…', 'warn');
       const djText = await produceDjScriptOrFallback(curItem, nextItem);
       setDjText(djText);
-      setRadioMsg('Gap: 🔔 placeholder beep (P6 replaces with voiced patter)…', 'warn');
-      try { await playBeep(BEEP_MS); } catch (e) { console.warn('beep failed', e); }
+      const provider = loadSettings().ttsProvider;
+      setRadioMsg(`Gap: 🎙 voicing patter via ${provider}…`, 'warn');
+      try {
+        await speak(djText);
+      } catch (e) {
+        console.warn('TTS failed, falling back to beep:', e);
+        setRadioMsg(`TTS failed (${e.message}) — beep instead.`, 'warn');
+        try { await playBeep(BEEP_MS); } catch (_) {}
+      }
       _songsSinceLastTalk = 0;
     } else if (!nextItem) {
       setDjText('(end of queue — radio will stop after this song)');
@@ -1576,6 +1698,21 @@ async function init() {
   });
   document.getElementById('btn-stop-radio').addEventListener('click', () => {
     stopRadio(); setRadioMsg('Radio stopped.', '');
+  });
+
+  document.getElementById('btn-test-voice').addEventListener('click', async () => {
+    const text = document.getElementById('dj-text').textContent.trim();
+    if (!text || text.startsWith('(')) { setDjMsg('Generate a patter first.', 'warn'); return; }
+    try {
+      setDjMsg(`Voicing via ${loadSettings().ttsProvider}…`, 'warn');
+      await speak(text);
+      setDjMsg('Done.', 'ok');
+    } catch (e) {
+      setDjMsg(`TTS failed: ${e.message}`, 'err');
+    }
+  });
+  document.getElementById('btn-stop-voice').addEventListener('click', () => {
+    stopTts(); setDjMsg('Stopped.', '');
   });
 
   document.getElementById('btn-test-dj').addEventListener('click', async () => {
