@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Radio Host</title>
+<style>
+  :root {
+    --bg: #0e0e10;
+    --panel: #18181c;
+    --panel-2: #1f1f24;
+    --text: #e8e8ea;
+    --muted: #9a9aa3;
+    --accent: #1db954;
+    --accent-2: #6ad1ff;
+    --warn: #ffb454;
+    --danger: #ff6b6b;
+    --border: #2a2a31;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header {
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header .phase { color: var(--muted); font-size: 12px; }
+  main { max-width: 820px; margin: 0 auto; padding: 20px; }
+  section {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  section h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .row { display: grid; grid-template-columns: 200px 1fr; gap: 10px 14px; align-items: center; margin-bottom: 10px; }
+  .row label { color: var(--muted); font-size: 13px; }
+  .row .hint { grid-column: 2; font-size: 12px; color: var(--muted); margin-top: -4px; }
+  input[type=text], input[type=password], input[type=url], select {
+    width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font: inherit;
+  }
+  input[type=range] { width: 100%; }
+  .readonly {
+    background: var(--panel-2); border: 1px dashed var(--border);
+    border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px; color: var(--accent-2); word-break: break-all; user-select: all;
+  }
+  button {
+    background: var(--accent); color: #001a07; border: 0; border-radius: 6px;
+    padding: 9px 14px; font-weight: 600; cursor: pointer; font: inherit;
+  }
+  button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+  .status { font-size: 12px; color: var(--muted); }
+  .status.ok { color: var(--accent); }
+  .status.warn { color: var(--warn); }
+  .status.err { color: var(--danger); }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--muted); font-size: 11px; letter-spacing: .04em;
+  }
+  details summary { cursor: pointer; color: var(--muted); }
+  .ratio-val { min-width: 56px; display: inline-block; text-align: right; color: var(--accent-2); font-family: ui-monospace, Consolas, monospace; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>AI Radio Host <span class="pill">P0</span></h1>
+    <div class="phase">Settings only — no auth / no playback yet</div>
+  </header>
+  <main>
+
+    <section>
+      <h2>Environment (read-only)</h2>
+      <div class="row">
+        <label>Spotify CLIENT_ID</label>
+        <div class="readonly" id="env-client-id">…</div>
+      </div>
+      <div class="row">
+        <label>Redirect URI (auto)</label>
+        <div class="readonly" id="env-redirect-uri">…</div>
+        <div class="hint">This MUST exactly match a Redirect URI registered in your Spotify app dashboard. Auto-selected based on current origin.</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Settings</h2>
+
+      <div class="row">
+        <label for="set-anthropic-key">Anthropic API key</label>
+        <input id="set-anthropic-key" type="password" autocomplete="off" placeholder="sk-ant-…">
+        <div class="hint">Used for DJ patter + new-track suggestions. Stored in localStorage only — never committed.</div>
+      </div>
+
+      <div class="row">
+        <label for="set-anthropic-model">Anthropic model ID</label>
+        <input id="set-anthropic-model" type="text" autocomplete="off">
+        <div class="hint">Default: <code>claude-sonnet-4-6</code>. Change if Anthropic releases a newer Sonnet.</div>
+      </div>
+
+      <div class="row">
+        <label for="set-tts-provider">TTS provider</label>
+        <select id="set-tts-provider">
+          <option value="browser">Browser SpeechSynthesis (free, no key)</option>
+          <option value="elevenlabs">ElevenLabs (paid — flag before use)</option>
+          <option value="openai">OpenAI TTS (paid — flag before use)</option>
+        </select>
+        <div class="hint">Default = free browser TTS. Paid providers require a key below.</div>
+      </div>
+
+      <div class="row" id="row-elevenlabs-key" style="display:none">
+        <label for="set-elevenlabs-key">ElevenLabs API key</label>
+        <input id="set-elevenlabs-key" type="password" autocomplete="off" placeholder="optional — only if TTS provider = ElevenLabs">
+      </div>
+
+      <div class="row" id="row-elevenlabs-voice" style="display:none">
+        <label for="set-elevenlabs-voice">ElevenLabs voice ID</label>
+        <input id="set-elevenlabs-voice" type="text" autocomplete="off" placeholder="e.g. EXAVITQu4vr4xnSDxMaL">
+      </div>
+
+      <div class="row" id="row-openai-key" style="display:none">
+        <label for="set-openai-key">OpenAI API key</label>
+        <input id="set-openai-key" type="password" autocomplete="off" placeholder="optional — only if TTS provider = OpenAI">
+      </div>
+
+      <div class="row">
+        <label for="set-rss-feed">News RSS feed URL</label>
+        <input id="set-rss-feed" type="url" autocomplete="off">
+        <div class="hint">Default: NRK toppsaker. Headlines feed into the DJ patter.</div>
+      </div>
+
+      <div class="row">
+        <label for="set-mix-ratio">Mix ratio (% new songs)</label>
+        <div style="display:flex;align-items:center;gap:12px">
+          <input id="set-mix-ratio" type="range" min="0" max="100" step="5">
+          <span class="ratio-val" id="set-mix-ratio-val">…</span>
+        </div>
+        <div class="hint">0% = only songs you've heard. 100% = only AI-suggested discoveries. Default 30%.</div>
+      </div>
+
+      <div class="toolbar">
+        <button id="btn-save">Save settings</button>
+        <button id="btn-reset" class="secondary">Reset to defaults</button>
+        <button id="btn-clear" class="secondary" title="Wipe all settings + auth tokens from localStorage">Clear all stored data</button>
+        <span id="save-status" class="status"></span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Debug</h2>
+      <details>
+        <summary>Show current localStorage contents</summary>
+        <pre id="debug-storage" style="background:var(--panel-2);padding:10px;border-radius:6px;overflow:auto;max-height:280px;font-size:12px"></pre>
+      </details>
+      <div class="status" style="margin-top:8px">
+        P0 has no network calls. Login + SDK arrive in P1+.
+      </div>
+    </section>
+
+  </main>
+
+<script>
+'use strict';
+
+// ============================================================
+// Top constants — CLIENT_ID is public, safe to commit.
+// REDIRECT_URI is selected at runtime from current origin so the
+// same index.html works on Pages and on local dev (127.0.0.1).
+// ============================================================
+const CLIENT_ID = 'faea1a7639724188bad469644b97ceb9';
+
+const REDIRECT_URIS = {
+  pages:  'https://fliptemprr.github.io/spotify-radio/',
+  local:  'http://127.0.0.1:5173/',
+};
+
+function pickRedirectUri() {
+  const h = location.hostname;
+  if (h === '127.0.0.1') return REDIRECT_URIS.local;
+  if (h.endsWith('github.io')) return REDIRECT_URIS.pages;
+  // Anything else (file://, localhost, other host) — surface clearly.
+  // We intentionally do NOT silently fall back to 'localhost' since Spotify rejects it.
+  return null;
+}
+const REDIRECT_URI = pickRedirectUri();
+
+// ============================================================
+// Settings — defaults + localStorage persistence
+// ============================================================
+const STORAGE_KEY = 'spotifyRadio.settings.v1';
+
+const DEFAULTS = Object.freeze({
+  anthropicKey:     '',
+  anthropicModel:   'claude-sonnet-4-6',
+  ttsProvider:      'browser',
+  elevenLabsKey:    '',
+  elevenLabsVoice: '',
+  openAiKey:        '',
+  rssFeed:          'https://www.nrk.no/toppsaker.rss',
+  mixRatio:         30,
+});
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { ...DEFAULTS };
+    const parsed = JSON.parse(raw);
+    // Merge with defaults so newly added keys get sensible values.
+    return { ...DEFAULTS, ...parsed };
+  } catch (e) {
+    console.warn('[settings] load failed, using defaults:', e);
+    return { ...DEFAULTS };
+  }
+}
+
+function saveSettings(s) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+}
+
+function readForm() {
+  return {
+    anthropicKey:    document.getElementById('set-anthropic-key').value.trim(),
+    anthropicModel:  document.getElementById('set-anthropic-model').value.trim() || DEFAULTS.anthropicModel,
+    ttsProvider:     document.getElementById('set-tts-provider').value,
+    elevenLabsKey:   document.getElementById('set-elevenlabs-key').value.trim(),
+    elevenLabsVoice: document.getElementById('set-elevenlabs-voice').value.trim(),
+    openAiKey:       document.getElementById('set-openai-key').value.trim(),
+    rssFeed:         document.getElementById('set-rss-feed').value.trim() || DEFAULTS.rssFeed,
+    mixRatio:        clampInt(document.getElementById('set-mix-ratio').value, 0, 100),
+  };
+}
+
+function writeForm(s) {
+  document.getElementById('set-anthropic-key').value    = s.anthropicKey;
+  document.getElementById('set-anthropic-model').value  = s.anthropicModel;
+  document.getElementById('set-tts-provider').value     = s.ttsProvider;
+  document.getElementById('set-elevenlabs-key').value   = s.elevenLabsKey;
+  document.getElementById('set-elevenlabs-voice').value = s.elevenLabsVoice;
+  document.getElementById('set-openai-key').value       = s.openAiKey;
+  document.getElementById('set-rss-feed').value         = s.rssFeed;
+  document.getElementById('set-mix-ratio').value        = String(s.mixRatio);
+  document.getElementById('set-mix-ratio-val').textContent = s.mixRatio + '% new';
+  applyTtsProviderVisibility(s.ttsProvider);
+}
+
+function clampInt(v, lo, hi) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function applyTtsProviderVisibility(provider) {
+  document.getElementById('row-elevenlabs-key').style.display   = (provider === 'elevenlabs') ? '' : 'none';
+  document.getElementById('row-elevenlabs-voice').style.display = (provider === 'elevenlabs') ? '' : 'none';
+  document.getElementById('row-openai-key').style.display       = (provider === 'openai')     ? '' : 'none';
+}
+
+function setStatus(msg, level) {
+  const el = document.getElementById('save-status');
+  el.textContent = msg;
+  el.className = 'status' + (level ? ' ' + level : '');
+}
+
+function renderDebugStorage() {
+  const out = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    let v = localStorage.getItem(k);
+    try { v = JSON.parse(v); } catch (_) {}
+    // Redact obvious key-shaped values so we don't print them in plaintext.
+    if (v && typeof v === 'object') {
+      const redacted = { ...v };
+      for (const key of Object.keys(redacted)) {
+        if (/key$/i.test(key) && typeof redacted[key] === 'string' && redacted[key]) {
+          redacted[key] = redacted[key].slice(0, 4) + '…' + redacted[key].slice(-2) + ' (redacted)';
+        }
+      }
+      v = redacted;
+    }
+    out[k] = v;
+  }
+  document.getElementById('debug-storage').textContent =
+    Object.keys(out).length ? JSON.stringify(out, null, 2) : '(empty)';
+}
+
+// ============================================================
+// Init
+// ============================================================
+function init() {
+  // Env panel
+  document.getElementById('env-client-id').textContent = CLIENT_ID;
+  if (REDIRECT_URI) {
+    document.getElementById('env-redirect-uri').textContent = REDIRECT_URI;
+  } else {
+    const el = document.getElementById('env-redirect-uri');
+    el.textContent = `(no match for origin "${location.origin}") — open via https://fliptemprr.github.io/spotify-radio/ or http://127.0.0.1:5173/`;
+    el.style.color = 'var(--warn)';
+  }
+
+  // Load + render settings
+  const s = loadSettings();
+  writeForm(s);
+
+  // Wire events
+  document.getElementById('set-tts-provider').addEventListener('change', e => {
+    applyTtsProviderVisibility(e.target.value);
+  });
+  document.getElementById('set-mix-ratio').addEventListener('input', e => {
+    document.getElementById('set-mix-ratio-val').textContent = e.target.value + '% new';
+  });
+
+  document.getElementById('btn-save').addEventListener('click', () => {
+    const next = readForm();
+    saveSettings(next);
+    writeForm(next);            // re-render canonicalised values
+    renderDebugStorage();
+    setStatus('Saved to localStorage.', 'ok');
+  });
+
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    writeForm({ ...DEFAULTS });
+    setStatus('Form reset to defaults — click Save to persist.', 'warn');
+  });
+
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    if (!confirm('Wipe ALL stored data for this site? (settings, future auth tokens, caches)')) return;
+    localStorage.clear();
+    writeForm({ ...DEFAULTS });
+    renderDebugStorage();
+    setStatus('All localStorage cleared.', 'warn');
+  });
+
+  renderDebugStorage();
+  setStatus('Ready.', '');
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

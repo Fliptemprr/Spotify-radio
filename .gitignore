@@ -1,0 +1,20 @@
+# Never commit anything that could leak a key or local mess.
+# Keys live in localStorage only — never in a file.
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+config.local.*
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local dev server caches
+node_modules/
+.cache/
+dist/
