@@ -16,6 +16,8 @@
     --warn: #ffb454;
     --danger: #ff6b6b;
     --border: #2a2a31;
+    --new: #c084fc;
+    --heard: #6ad1ff;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -36,7 +38,7 @@
   }
   section h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
   .row { display: grid; grid-template-columns: 200px 1fr; gap: 10px 14px; align-items: center; margin-bottom: 10px; }
-  .row label { color: var(--muted); font-size: 13px; }
+  .row label { color: var(--muted); font-size: 13px; align-self: start; padding-top: 6px; }
   .row .hint { grid-column: 2; font-size: 12px; color: var(--muted); margin-top: -4px; }
   input[type=text], input[type=password], input[type=url], select {
     width: 100%; background: var(--panel-2); color: var(--text);
@@ -85,30 +87,34 @@
   .now-title { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .now-artist { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .position-row { display: flex; align-items: center; gap: 10px; }
-  .position-bar {
-    flex: 1; height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden;
-  }
+  .position-bar { flex: 1; height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
   .position-fill { height: 100%; background: var(--accent-2); width: 0%; transition: width .2s linear; }
   .time { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--muted); min-width: 44px; text-align: center; }
 
   /* Playlist list */
   .pl-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-  .pl-card {
-    display: flex; gap: 10px; align-items: center; padding: 8px;
-    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
-    min-width: 0;
-  }
+  .pl-card { display: flex; gap: 10px; align-items: center; padding: 8px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; min-width: 0; }
   .pl-cover { width: 48px; height: 48px; border-radius: 4px; background: var(--bg); flex-shrink: 0; object-fit: cover; }
   .pl-info { flex: 1; min-width: 0; }
   .pl-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pl-meta { color: var(--muted); font-size: 12px; }
   .pl-card button { padding: 6px 10px; font-size: 12px; }
+
+  /* Radio queue */
+  .q-row { padding: 4px 6px; border-radius: 4px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+  .q-row.current { background: rgba(29,185,84,.12); font-weight: 600; }
+  .q-kind { font-family: ui-monospace, Consolas, monospace; font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+  .q-kind.heard { background: rgba(106,209,255,.15); color: var(--heard); }
+  .q-kind.new   { background: rgba(192,132,252,.15); color: var(--new); }
+  .q-track { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .q-current-marker { width: 14px; color: var(--accent); }
 </style>
 </head>
 <body>
   <header>
-    <h1>AI Radio Host <span class="pill">P2</span></h1>
-    <div class="phase">Player + playlists — heard/new mix arrives in P3</div>
+    <h1>AI Radio Host <span class="pill">P3</span></h1>
+    <div class="phase">Mix engine — DJ patter arrives in P5</div>
   </header>
   <main>
 
@@ -147,7 +153,6 @@
         <label>Device ID</label>
         <div id="player-device-id" class="mono">…</div>
       </div>
-
       <div class="now-playing" id="now-playing" style="display:none">
         <img id="now-art" class="now-art" alt="">
         <div class="now-meta">
@@ -160,22 +165,52 @@
           </div>
         </div>
       </div>
-
       <div class="toolbar" id="player-controls" style="display:none">
-        <button id="btn-prev" class="icon secondary" title="Previous track">⏮</button>
+        <button id="btn-prev" class="icon secondary" title="Previous">⏮</button>
         <button id="btn-playpause" class="icon" title="Play / Pause">▶</button>
-        <button id="btn-next" class="icon secondary" title="Next track">⏭</button>
+        <button id="btn-next" class="icon secondary" title="Next (radio: from queue; otherwise: Spotify SDK)">⏭</button>
         <button id="btn-transfer" class="secondary" title="Transfer playback to this device">Transfer playback here</button>
         <span id="player-msg" class="status"></span>
       </div>
-
       <div class="status" style="margin-top:10px">
         Audio plays through this browser tab. If you hear nothing, click <em>Transfer playback here</em>. Premium account required.
       </div>
     </section>
 
+    <section id="section-radio">
+      <h2>Radio mix</h2>
+      <div class="row">
+        <label for="set-heard-playlist">Heard-source playlist</label>
+        <select id="set-heard-playlist">
+          <option value="">(none — top items + recent + saved only)</option>
+        </select>
+        <div class="hint">Optional extra playlist whose tracks count as "heard". Your top tracks, recently played, and saved library are always included.</div>
+      </div>
+      <div class="row">
+        <label>Pool sizes</label>
+        <div class="mono">
+          <span style="color:var(--heard)">Heard: <span id="pool-heard">0</span></span>
+          ·
+          <span style="color:var(--new)">New: <span id="pool-new">0</span></span>
+          ·
+          <span id="pool-cache-age">cache: never</span>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="btn-build-heard" class="secondary">1. Build heard pool</button>
+        <button id="btn-build-new" class="secondary">2. Build new pool (Claude · ~$0.01)</button>
+        <button id="btn-start-radio">3. Start radio</button>
+        <button id="btn-stop-radio" class="secondary" style="display:none">Stop radio</button>
+        <span id="radio-msg" class="status"></span>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <label>Queue</label>
+        <div id="queue-list" style="font-size:12px;max-height:280px;overflow:auto;background:var(--panel-2);padding:8px;border-radius:6px;border:1px solid var(--border)"></div>
+      </div>
+    </section>
+
     <section id="section-playlists">
-      <h2>Playlists</h2>
+      <h2>Playlists (linear playback)</h2>
       <div class="toolbar" style="margin: 0 0 12px 0">
         <button id="btn-load-playlists" class="secondary">Load playlists</button>
         <span id="playlists-status" class="status"></span>
@@ -223,17 +258,15 @@
 
       <div class="row" id="row-elevenlabs-key" style="display:none">
         <label for="set-elevenlabs-key">ElevenLabs API key</label>
-        <input id="set-elevenlabs-key" type="password" autocomplete="off" placeholder="optional — only if TTS provider = ElevenLabs">
+        <input id="set-elevenlabs-key" type="password" autocomplete="off">
       </div>
-
       <div class="row" id="row-elevenlabs-voice" style="display:none">
         <label for="set-elevenlabs-voice">ElevenLabs voice ID</label>
-        <input id="set-elevenlabs-voice" type="text" autocomplete="off" placeholder="e.g. EXAVITQu4vr4xnSDxMaL">
+        <input id="set-elevenlabs-voice" type="text" autocomplete="off">
       </div>
-
       <div class="row" id="row-openai-key" style="display:none">
         <label for="set-openai-key">OpenAI API key</label>
-        <input id="set-openai-key" type="password" autocomplete="off" placeholder="optional — only if TTS provider = OpenAI">
+        <input id="set-openai-key" type="password" autocomplete="off">
       </div>
 
       <div class="row">
@@ -248,7 +281,7 @@
           <input id="set-mix-ratio" type="range" min="0" max="100" step="5">
           <span class="ratio-val" id="set-mix-ratio-val">…</span>
         </div>
-        <div class="hint">0% = only songs you've heard. 100% = only AI-suggested discoveries. Default 30%.</div>
+        <div class="hint">0% = only songs you've heard. 100% = only AI-suggested discoveries. Default 30%. Takes effect on next "Start radio".</div>
       </div>
 
       <div class="toolbar">
@@ -266,7 +299,7 @@
         <pre id="debug-storage" style="background:var(--panel-2);padding:10px;border-radius:6px;overflow:auto;max-height:280px;font-size:12px"></pre>
       </details>
       <div class="status" style="margin-top:8px">
-        Tokens are redacted in the debug panel above (length-only).
+        Tokens / API keys are redacted in the debug panel (length-only).
       </div>
     </section>
 
@@ -276,15 +309,14 @@
 'use strict';
 
 // ============================================================
-// Top constants
+// Constants
 // ============================================================
 const CLIENT_ID = 'faea1a7639724188bad469644b97ceb9';
 
 const REDIRECT_URIS = {
-  pages:  'https://fliptemprr.github.io/Spotify-radio/',
-  local:  'http://127.0.0.1:5173/',
+  pages: 'https://fliptemprr.github.io/Spotify-radio/',
+  local: 'http://127.0.0.1:5173/',
 };
-
 function pickRedirectUri() {
   const h = location.hostname;
   if (h === '127.0.0.1') return REDIRECT_URIS.local;
@@ -294,12 +326,8 @@ function pickRedirectUri() {
 const REDIRECT_URI = pickRedirectUri();
 
 const SCOPES = [
-  'streaming',
-  'user-read-playback-state',
-  'user-modify-playback-state',
-  'playlist-read-private',
-  'user-library-read',
-  'user-top-read',
+  'streaming', 'user-read-playback-state', 'user-modify-playback-state',
+  'playlist-read-private', 'user-library-read', 'user-top-read',
   'user-read-recently-played',
 ];
 
@@ -308,8 +336,11 @@ const SPOTIFY_TOKEN_URL     = 'https://accounts.spotify.com/api/token';
 const SPOTIFY_API           = 'https://api.spotify.com/v1';
 const SDK_URL               = 'https://sdk.scdn.co/spotify-player.js';
 
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+
 const SETTINGS_KEY = 'spotifyRadio.settings.v1';
 const AUTH_KEY     = 'spotifyRadio.auth.v1';
+const NEWPOOL_KEY  = 'spotifyRadio.newPool.v1';
 const PKCE_VERIFIER_SS_KEY = 'spotifyRadio.pkce.verifier';
 const PKCE_STATE_SS_KEY    = 'spotifyRadio.pkce.state';
 
@@ -350,8 +381,84 @@ function formatTime(ms) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/**
+ * PURE: Interleave heard and new tracks so ~ratioNewPct of the output is 'new',
+ * evenly distributed (not all-new-then-all-heard).
+ * Both input arrays are objects with at least { uri, name, artist }.
+ * Output: [{...inputObj, kind: 'heard'|'new'}, ...]
+ * Caller is responsible for shuffling inputs if randomness is desired.
+ */
+function mixQueue(heardArr, newArr, ratioNewPct, maxLength = 100) {
+  const pct = Math.max(0, Math.min(100, ratioNewPct));
+  const out = [];
+  let hi = 0, ni = 0, newCount = 0;
+  const N = Math.min(maxLength, heardArr.length + newArr.length);
+  for (let i = 0; i < N; i++) {
+    const desired = Math.round(pct * (i + 1) / 100);
+    const wantNew = newCount < desired;
+    const canNew = ni < newArr.length;
+    const canHeard = hi < heardArr.length;
+    let pickNew;
+    if      (wantNew  && canNew)   pickNew = true;
+    else if (!wantNew && canHeard) pickNew = false;
+    else if (canNew)               pickNew = true;
+    else if (canHeard)             pickNew = false;
+    else break;
+    if (pickNew) { out.push({ ...newArr[ni++], kind: 'new' });   newCount++; }
+    else         { out.push({ ...heardArr[hi++], kind: 'heard' }); }
+  }
+  return out;
+}
+
+/**
+ * PURE: Parse Claude's response, which should be a JSON array of {title, artist}.
+ * Tolerates markdown code fences ```json ... ```.
+ * Throws on malformed input. Returns the cleaned array.
+ */
+function parseSuggestionsJson(text) {
+  if (typeof text !== 'string') throw new Error('parseSuggestionsJson: expected string');
+  let s = text.trim();
+  // Strip leading code fence
+  s = s.replace(/^```(?:json)?\s*\n?/i, '');
+  // Strip trailing code fence
+  s = s.replace(/\n?```\s*$/, '');
+  // Sometimes Claude prefixes "Here is the JSON:" — find first [
+  const first = s.indexOf('[');
+  const last  = s.lastIndexOf(']');
+  if (first === -1 || last === -1 || last < first) throw new Error('no JSON array found in response');
+  const arr = JSON.parse(s.slice(first, last + 1));
+  if (!Array.isArray(arr)) throw new Error('parsed value is not an array');
+  return arr.filter(x => x && typeof x.title === 'string' && typeof x.artist === 'string')
+            .map(x => ({ title: x.title.trim(), artist: x.artist.trim() }));
+}
+
+/**
+ * PURE: Fisher-Yates shuffle (in place). Returns the same array for chaining.
+ * Not seedable — pure in the sense of no DOM/network side-effects.
+ */
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+  }
+  return arr;
+}
+
+/**
+ * PURE: Project a Spotify track API object to a minimal shape.
+ * Returns null if uri missing.
+ */
+function trackInfo(t) {
+  if (!t || !t.uri || !t.uri.startsWith('spotify:track:')) return null;
+  return {
+    uri: t.uri,
+    name: t.name || '(untitled)',
+    artist: (t.artists || []).map(a => a.name).filter(Boolean).join(', ') || '(unknown)',
+  };
+}
+
 // ============================================================
-// Settings (P0)
+// Settings
 // ============================================================
 const DEFAULTS = Object.freeze({
   anthropicKey:    '',
@@ -363,24 +470,18 @@ const DEFAULTS = Object.freeze({
   rssFeed:         'https://www.nrk.no/toppsaker.rss',
   mixRatio:        30,
 });
-
 function loadSettings() {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { ...DEFAULTS };
-    return { ...DEFAULTS, ...JSON.parse(raw) };
-  } catch (e) { return { ...DEFAULTS }; }
+  try { const raw = localStorage.getItem(SETTINGS_KEY); return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS }; }
+  catch { return { ...DEFAULTS }; }
 }
 function saveSettings(s) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
 
 // ============================================================
-// Auth (P1)
+// Auth
 // ============================================================
 function loadAuth() {
-  try {
-    const raw = localStorage.getItem(AUTH_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+  try { const raw = localStorage.getItem(AUTH_KEY); return raw ? JSON.parse(raw) : null; }
+  catch { return null; }
 }
 function saveAuth(a) { localStorage.setItem(AUTH_KEY, JSON.stringify(a)); }
 function clearAuth() {
@@ -394,7 +495,7 @@ let _refreshTimer = null;
 
 async function login() {
   if (!REDIRECT_URI) {
-    setAccountStatus('Cannot log in: page origin does not match a registered redirect URI. Use the Pages URL or http://127.0.0.1:5173/', 'err');
+    setAccountStatus('Cannot log in: page origin does not match a registered redirect URI. Use Pages URL or http://127.0.0.1:5173/', 'err');
     return;
   }
   const verifier  = pkceVerifier(64);
@@ -403,14 +504,9 @@ async function login() {
   sessionStorage.setItem(PKCE_VERIFIER_SS_KEY, verifier);
   sessionStorage.setItem(PKCE_STATE_SS_KEY, state);
   const params = new URLSearchParams({
-    client_id:             CLIENT_ID,
-    response_type:         'code',
-    redirect_uri:          REDIRECT_URI,
-    scope:                 SCOPES.join(' '),
-    code_challenge_method: 'S256',
-    code_challenge:        challenge,
-    state,
-    show_dialog:           'false',
+    client_id: CLIENT_ID, response_type: 'code', redirect_uri: REDIRECT_URI,
+    scope: SCOPES.join(' '), code_challenge_method: 'S256', code_challenge: challenge,
+    state, show_dialog: 'false',
   });
   location.assign(`${SPOTIFY_AUTHORIZE_URL}?${params}`);
 }
@@ -421,68 +517,44 @@ async function handleRedirectCallback() {
   const state = url.searchParams.get('state');
   const err = url.searchParams.get('error');
   if (!code && !err) return false;
-
-  url.searchParams.delete('code');
-  url.searchParams.delete('state');
-  url.searchParams.delete('error');
+  url.searchParams.delete('code'); url.searchParams.delete('state'); url.searchParams.delete('error');
   history.replaceState({}, '', url.toString());
-
   if (err) { setAccountStatus(`Spotify returned error: ${err}`, 'err'); return false; }
-
   const expectedState = sessionStorage.getItem(PKCE_STATE_SS_KEY);
   const verifier      = sessionStorage.getItem(PKCE_VERIFIER_SS_KEY);
-  sessionStorage.removeItem(PKCE_STATE_SS_KEY);
-  sessionStorage.removeItem(PKCE_VERIFIER_SS_KEY);
-
+  sessionStorage.removeItem(PKCE_STATE_SS_KEY); sessionStorage.removeItem(PKCE_VERIFIER_SS_KEY);
   if (!verifier)              { setAccountStatus('Missing PKCE verifier. Try logging in again.', 'err'); return false; }
   if (state !== expectedState) { setAccountStatus('State mismatch — possible CSRF. Aborted.', 'err');     return false; }
-
   try {
-    setAccountStatus('Exchanging authorization code for token…', 'warn');
+    setAccountStatus('Exchanging code for token…', 'warn');
     const tok = await exchangeCodeForToken(code, verifier);
     saveAuth({
-      accessToken:  tok.access_token,
-      refreshToken: tok.refresh_token,
-      expiresAt:    Date.now() + tok.expires_in * 1000,
-      scope:        tok.scope,
-      tokenType:    tok.token_type,
+      accessToken: tok.access_token, refreshToken: tok.refresh_token,
+      expiresAt: Date.now() + tok.expires_in * 1000, scope: tok.scope, tokenType: tok.token_type,
     });
     return true;
-  } catch (e) {
-    setAccountStatus(`Token exchange failed: ${e.message}`, 'err');
-    return false;
-  }
+  } catch (e) { setAccountStatus(`Token exchange failed: ${e.message}`, 'err'); return false; }
 }
 
 async function exchangeCodeForToken(code, verifier) {
-  const body = new URLSearchParams({
-    grant_type:    'authorization_code',
-    code, redirect_uri: REDIRECT_URI, client_id: CLIENT_ID, code_verifier: verifier,
-  });
-  const r = await fetch(SPOTIFY_TOKEN_URL, {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
-  });
+  const body = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: REDIRECT_URI, client_id: CLIENT_ID, code_verifier: verifier });
+  const r = await fetch(SPOTIFY_TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 async function refreshAccessToken() {
   const auth = loadAuth();
-  if (!auth || !auth.refreshToken) throw new Error('no refresh token to use');
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token', refresh_token: auth.refreshToken, client_id: CLIENT_ID,
-  });
-  const r = await fetch(SPOTIFY_TOKEN_URL, {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
-  });
+  if (!auth || !auth.refreshToken) throw new Error('no refresh token');
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: auth.refreshToken, client_id: CLIENT_ID });
+  const r = await fetch(SPOTIFY_TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
   const tok = await r.json();
   saveAuth({
-    accessToken:  tok.access_token,
+    accessToken: tok.access_token,
     refreshToken: tok.refresh_token || auth.refreshToken,
-    expiresAt:    Date.now() + tok.expires_in * 1000,
-    scope:        tok.scope || auth.scope,
-    tokenType:    tok.token_type || auth.tokenType,
+    expiresAt: Date.now() + tok.expires_in * 1000,
+    scope: tok.scope || auth.scope, tokenType: tok.token_type || auth.tokenType,
   });
   return tok;
 }
@@ -492,15 +564,10 @@ function scheduleRefresh() {
   const auth = loadAuth();
   if (!auth) return;
   const refreshIn = auth.expiresAt - Date.now() - 60_000;
-  if (refreshIn <= 0) {
-    refreshAccessToken().then(() => { scheduleRefresh(); renderAccount(); })
-      .catch(e => setAccountStatus(`Auto-refresh failed: ${e.message}`, 'err'));
-    return;
-  }
-  _refreshTimer = setTimeout(() => {
-    refreshAccessToken().then(() => { scheduleRefresh(); renderAccount(); })
-      .catch(e => setAccountStatus(`Auto-refresh failed: ${e.message}`, 'err'));
-  }, refreshIn);
+  const doRefresh = () => refreshAccessToken().then(() => { scheduleRefresh(); renderAccount(); })
+    .catch(e => setAccountStatus(`Auto-refresh failed: ${e.message}`, 'err'));
+  if (refreshIn <= 0) doRefresh();
+  else _refreshTimer = setTimeout(doRefresh, refreshIn);
 }
 
 async function fetchProfile() {
@@ -516,22 +583,16 @@ async function fetchProfile() {
 }
 
 // ============================================================
-// Spotify Web API — small helper
+// Spotify Web API helper
 // ============================================================
 async function spotifyFetch(path, opts = {}) {
   const auth = loadAuth();
   if (!auth) throw new Error('not logged in');
   const url = path.startsWith('http') ? path : `${SPOTIFY_API}${path}`;
-  let r = await fetch(url, {
-    ...opts,
-    headers: { ...(opts.headers || {}), Authorization: `Bearer ${auth.accessToken}` },
-  });
+  let r = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${auth.accessToken}` } });
   if (r.status === 401) {
     await refreshAccessToken();
-    r = await fetch(url, {
-      ...opts,
-      headers: { ...(opts.headers || {}), Authorization: `Bearer ${loadAuth().accessToken}` },
-    });
+    r = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${loadAuth().accessToken}` } });
   }
   if (!r.ok && r.status !== 204) throw new Error(`${path} HTTP ${r.status}: ${await r.text()}`);
   if (r.status === 204) return null;
@@ -540,12 +601,9 @@ async function spotifyFetch(path, opts = {}) {
 }
 
 // ============================================================
-// Web Playback SDK (P2)
+// Web Playback SDK
 // ============================================================
-let _player        = null;
-let _deviceId      = null;
-let _playerState   = null;  // latest player_state_changed payload
-let _sdkLoadingPromise = null;
+let _player = null, _deviceId = null, _playerState = null, _sdkLoadingPromise = null;
 
 function loadSpotifySdk() {
   if (window.Spotify) return Promise.resolve(window.Spotify);
@@ -553,9 +611,8 @@ function loadSpotifySdk() {
   _sdkLoadingPromise = new Promise((resolve, reject) => {
     window.onSpotifyWebPlaybackSDKReady = () => resolve(window.Spotify);
     const s = document.createElement('script');
-    s.src = SDK_URL;
-    s.async = true;
-    s.onerror = () => reject(new Error('Failed to load Spotify Web Playback SDK from CDN'));
+    s.src = SDK_URL; s.async = true;
+    s.onerror = () => reject(new Error('Failed to load Web Playback SDK from CDN'));
     document.head.appendChild(s);
   });
   return _sdkLoadingPromise;
@@ -564,10 +621,8 @@ function loadSpotifySdk() {
 async function initPlayer() {
   if (_player) return _player;
   if (!loadAuth()) throw new Error('not logged in');
-
   setPlayerStatus('Loading Web Playback SDK…', 'warn');
   await loadSpotifySdk();
-
   setPlayerStatus('Initializing player…', 'warn');
   _player = new Spotify.Player({
     name: 'AI Radio Host',
@@ -581,39 +636,31 @@ async function initPlayer() {
     },
     volume: 0.5,
   });
-
   _player.addListener('ready', ({ device_id }) => {
     _deviceId = device_id;
-    setPlayerStatus(`Ready (this tab is now a Spotify Connect device).`, 'ok');
+    setPlayerStatus('Ready (this tab is now a Spotify Connect device).', 'ok');
     renderPlayer();
   });
   _player.addListener('not_ready', ({ device_id }) => {
     if (_deviceId === device_id) _deviceId = null;
-    setPlayerStatus('Device went offline.', 'warn');
-    renderPlayer();
+    setPlayerStatus('Device went offline.', 'warn'); renderPlayer();
   });
   _player.addListener('player_state_changed', state => {
     _playerState = state;
     renderPlayer();
+    if (state) onPlayerStateChange(state);
   });
   for (const evt of ['initialization_error', 'authentication_error', 'account_error', 'playback_error']) {
-    _player.addListener(evt, ({ message }) => {
-      setPlayerStatus(`${evt}: ${message}`, 'err');
-    });
+    _player.addListener(evt, ({ message }) => setPlayerStatus(`${evt}: ${message}`, 'err'));
   }
-
   const ok = await _player.connect();
   if (!ok) throw new Error('player.connect() returned false');
   return _player;
 }
 
 async function disconnectPlayer() {
-  if (_player) {
-    try { await _player.disconnect(); } catch (_) {}
-  }
-  _player = null;
-  _deviceId = null;
-  _playerState = null;
+  if (_player) try { await _player.disconnect(); } catch (_) {}
+  _player = null; _deviceId = null; _playerState = null;
 }
 
 async function transferPlaybackHere(autoplay = false) {
@@ -626,21 +673,25 @@ async function transferPlaybackHere(autoplay = false) {
 }
 
 async function playContext(contextUri) {
-  if (!_deviceId) {
-    setPlayerStatus('Device not ready yet — wait a moment, then try again.', 'warn');
-    return;
-  }
-  // Transfer first so the play call targets THIS tab.
+  if (!_deviceId) { setPlayerStatus('Device not ready yet.', 'warn'); return; }
   await transferPlaybackHere(false).catch(() => {});
   await spotifyFetch(`/me/player/play?device_id=${_deviceId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ context_uri: contextUri }),
   });
 }
 
+async function playUri(uri) {
+  if (!_deviceId) throw new Error('device not ready');
+  await transferPlaybackHere(false).catch(() => {});
+  await spotifyFetch(`/me/player/play?device_id=${_deviceId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uris: [uri] }),
+  });
+}
+
 // ============================================================
-// Playlists (P2)
+// Playlists (linear)
 // ============================================================
 let _playlists = [];
 
@@ -659,14 +710,10 @@ async function fetchPlaylists() {
 function renderPlaylists() {
   const list = document.getElementById('pl-list');
   list.innerHTML = '';
-  if (!_playlists.length) {
-    list.innerHTML = '<div class="status">No playlists loaded yet.</div>';
-    return;
-  }
+  if (!_playlists.length) { list.innerHTML = '<div class="status">No playlists loaded yet.</div>'; return; }
   for (const p of _playlists) {
     if (!p) continue;
-    const card = document.createElement('div');
-    card.className = 'pl-card';
+    const card = document.createElement('div'); card.className = 'pl-card';
     const cover = p.images?.[0]?.url || '';
     card.innerHTML = `
       <img class="pl-cover" alt="" src="${cover}">
@@ -674,25 +721,220 @@ function renderPlaylists() {
         <div class="pl-name"></div>
         <div class="pl-meta"></div>
       </div>
-      <button data-uri="${p.uri}">Play</button>
-    `;
-    card.querySelector('.pl-name').textContent  = p.name || '(untitled)';
-    card.querySelector('.pl-meta').textContent  = `${p.tracks?.total ?? '?'} tracks · ${p.owner?.display_name || ''}`;
+      <button data-uri="${p.uri}">Play</button>`;
+    card.querySelector('.pl-name').textContent = p.name || '(untitled)';
+    card.querySelector('.pl-meta').textContent = `${p.tracks?.total ?? '?'} tracks · ${p.owner?.display_name || ''}`;
     card.querySelector('button').addEventListener('click', async () => {
       try {
+        _radioActive = false; updateRadioButtons();
         setPlayerMsg(`Starting "${p.name}"…`, 'warn');
         await playContext(p.uri);
-        setPlayerMsg('', '');
-      } catch (e) {
-        setPlayerMsg(`Play failed: ${e.message}`, 'err');
-      }
+        setPlayerMsg('Linear playlist mode (radio off).', '');
+      } catch (e) { setPlayerMsg(`Play failed: ${e.message}`, 'err'); }
     });
     list.appendChild(card);
+  }
+  // Also populate the heard-source dropdown
+  const sel = document.getElementById('set-heard-playlist');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">(none — top items + recent + saved only)</option>';
+  for (const p of _playlists) {
+    if (!p) continue;
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = `${p.name} (${p.tracks?.total ?? '?'})`;
+    sel.appendChild(o);
+  }
+  if (prev) sel.value = prev;
+}
+
+// ============================================================
+// HEARD POOL — top items + recent + saved + chosen playlist
+// ============================================================
+async function buildHeardPool(chosenPlaylistId = null, onProgress = () => {}) {
+  const map = new Map();
+  const add = (t) => { const info = trackInfo(t); if (info && !map.has(info.uri)) map.set(info.uri, info); };
+
+  // Top tracks across all time ranges
+  for (const range of ['short_term', 'medium_term', 'long_term']) {
+    onProgress(`fetching /me/top/tracks (${range})…`);
+    try {
+      const d = await spotifyFetch(`/me/top/tracks?limit=50&time_range=${range}`);
+      d?.items?.forEach(add);
+    } catch (e) { console.warn(`top/${range} failed`, e); }
+  }
+  // Recently played
+  onProgress('fetching /me/player/recently-played…');
+  try {
+    const d = await spotifyFetch('/me/player/recently-played?limit=50');
+    d?.items?.forEach(it => add(it?.track));
+  } catch (e) { console.warn('recently-played failed', e); }
+  // Saved tracks (cap at 200 to keep fast)
+  let url = `${SPOTIFY_API}/me/tracks?limit=50`;
+  let count = 0;
+  while (url && count < 200) {
+    onProgress(`fetching saved tracks (${count}/${count + 50})…`);
+    try {
+      const d = await spotifyFetch(url);
+      d?.items?.forEach(it => add(it?.track));
+      url = d?.next; count += d?.items?.length || 0;
+    } catch (e) { console.warn('saved failed', e); break; }
+  }
+  // Chosen playlist
+  if (chosenPlaylistId) {
+    let url2 = `${SPOTIFY_API}/playlists/${chosenPlaylistId}/tracks?limit=50&fields=items(track(uri,name,artists(name))),next`;
+    let n = 0;
+    while (url2 && n < 500) {
+      onProgress(`fetching playlist tracks (${n})…`);
+      try {
+        const d = await spotifyFetch(url2);
+        d?.items?.forEach(it => add(it?.track));
+        url2 = d?.next; n += d?.items?.length || 0;
+      } catch (e) { console.warn('playlist tracks failed', e); break; }
+    }
+  }
+  return [...map.values()];
+}
+
+// ============================================================
+// NEW POOL — Claude suggests; Spotify search resolves; dedupe
+// ============================================================
+async function suggestNewTracks(topArtists, topTracks, count = 30) {
+  const settings = loadSettings();
+  if (!settings.anthropicKey) throw new Error('Anthropic API key missing (Settings → Anthropic API key)');
+  const artistList = topArtists.slice(0, 15).map(a => a.name).filter(Boolean).join(', ');
+  const trackList  = topTracks.slice(0, 10).map(t => `${t.name} — ${(t.artists?.[0]?.name) || ''}`).join('\n');
+
+  const system = `You are a music recommender. Suggest songs the user likely does NOT already know, but would enjoy based on their taste. Return ONLY a strict JSON array of objects with exactly two fields: "title" (the song title) and "artist" (the artist name). No prose, no markdown, no explanations. Format: [{"title":"…","artist":"…"}, …]`;
+  const user = `My top artists: ${artistList}\n\nMy top tracks:\n${trackList}\n\nReturn exactly ${count} suggestions as a JSON array. Lean toward songs/artists that are stylistically adjacent to my taste but not from my top artists list — surprise me with adjacent discoveries.`;
+
+  const r = await fetch(ANTHROPIC_URL, {
+    method: 'POST',
+    headers: {
+      'x-api-key': settings.anthropicKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: settings.anthropicModel,
+      max_tokens: 1500,
+      system,
+      messages: [{ role: 'user', content: user }],
+    }),
+  });
+  if (!r.ok) throw new Error(`Anthropic HTTP ${r.status}: ${await r.text()}`);
+  const data = await r.json();
+  const text = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+  return parseSuggestionsJson(text);
+}
+
+async function searchTrackOnSpotify(title, artist) {
+  // Spotify search is fuzzy; try title+artist first.
+  const q = encodeURIComponent(`${title} ${artist}`);
+  const data = await spotifyFetch(`/search?q=${q}&type=track&limit=5`);
+  const items = data?.tracks?.items || [];
+  if (!items.length) return null;
+  const lower = artist.toLowerCase();
+  const exact = items.find(t => (t.artists || []).some(a => a.name.toLowerCase() === lower));
+  return exact || items[0];
+}
+
+async function buildNewPool(heardSet, count = 30, onProgress = () => {}) {
+  onProgress('fetching your top artists/tracks for taste context…');
+  const [tA, tT] = await Promise.all([
+    spotifyFetch('/me/top/artists?limit=20&time_range=medium_term'),
+    spotifyFetch('/me/top/tracks?limit=20&time_range=medium_term'),
+  ]);
+  onProgress(`asking Claude for ${count} suggestions…`);
+  const suggestions = await suggestNewTracks(tA?.items || [], tT?.items || [], count);
+  onProgress(`Claude returned ${suggestions.length}. Resolving via Spotify Search…`);
+  const out = [];
+  for (let i = 0; i < suggestions.length; i++) {
+    const s = suggestions[i];
+    onProgress(`searching ${i + 1}/${suggestions.length}: ${s.title} — ${s.artist}`);
+    try {
+      const t = await searchTrackOnSpotify(s.title, s.artist);
+      if (!t) continue;
+      if (heardSet.has(t.uri)) continue; // already heard — drop
+      out.push(trackInfo(t));
+    } catch (e) { console.warn('search failed', s, e); }
+  }
+  return out;
+}
+
+// ============================================================
+// RADIO state
+// ============================================================
+let _heardPool = [];   // [{uri, name, artist}]
+let _newPool   = [];   // [{uri, name, artist}]
+let _newPoolBuiltAt = null;
+let _queue     = [];   // [{uri, name, artist, kind}]
+let _queueIndex = 0;
+let _radioActive = false;
+let _lastTrackEndUri = null;  // to avoid double-advancing
+
+function loadCachedNewPool() {
+  try {
+    const raw = localStorage.getItem(NEWPOOL_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+function saveCachedNewPool(tracks) {
+  localStorage.setItem(NEWPOOL_KEY, JSON.stringify({ tracks, builtAt: Date.now() }));
+}
+
+async function startRadio() {
+  if (!_heardPool.length && !_newPool.length) throw new Error('Build the heard and new pools first.');
+  if (!_deviceId) throw new Error('Player not ready yet.');
+  const settings = loadSettings();
+  const heardShuf = shuffleArray([..._heardPool]);
+  const newShuf   = shuffleArray([..._newPool]);
+  _queue = mixQueue(heardShuf, newShuf, settings.mixRatio, 100);
+  _queueIndex = 0;
+  _radioActive = true;
+  updateRadioButtons();
+  renderQueue();
+  if (_queue.length) await playQueueAt(0);
+}
+
+function stopRadio() {
+  _radioActive = false;
+  updateRadioButtons();
+}
+
+async function playQueueAt(i) {
+  if (i < 0 || i >= _queue.length) {
+    setRadioMsg('End of queue. Click Start radio to refill.', 'warn');
+    _radioActive = false; updateRadioButtons();
+    return;
+  }
+  _queueIndex = i;
+  _lastTrackEndUri = null;
+  await playUri(_queue[i].uri);
+  renderQueue();
+}
+
+// In P3, the only auto-advance trigger is the SDK going from "playing a track"
+// to "paused at position 0" — meaning the single-track playback finished.
+// P4 will replace this with proper gap detection ~5s before end.
+function onPlayerStateChange(state) {
+  if (!_radioActive) return;
+  if (!state) return;
+  const cur = state.track_window?.current_track?.uri;
+  // Track ended: paused + position 0 + previous_tracks contains what we just played.
+  if (state.paused && state.position === 0 && state.track_window?.previous_tracks?.length > 0) {
+    // Guard against double-fires from the SDK by tagging the URI we just advanced past.
+    const expected = _queue[_queueIndex]?.uri;
+    if (expected && _lastTrackEndUri !== expected && cur !== expected) {
+      _lastTrackEndUri = expected;
+      playQueueAt(_queueIndex + 1).catch(e => setRadioMsg(`Auto-advance failed: ${e.message}`, 'err'));
+    }
   }
 }
 
 // ============================================================
-// Form (P0)
+// Form
 // ============================================================
 function readForm() {
   return {
@@ -724,8 +966,7 @@ function applyTtsProviderVisibility(provider) {
   document.getElementById('row-openai-key').style.display       = (provider === 'openai')     ? '' : 'none';
 }
 function setStatus(msg, level) {
-  const el = document.getElementById('save-status');
-  el.textContent = msg;
+  const el = document.getElementById('save-status'); el.textContent = msg;
   el.className = 'status' + (level ? ' ' + level : '');
 }
 
@@ -733,8 +974,7 @@ function setStatus(msg, level) {
 // UI — Account
 // ============================================================
 function setAccountStatus(msg, level) {
-  const el = document.getElementById('acc-status');
-  el.textContent = msg;
+  const el = document.getElementById('acc-status'); el.textContent = msg;
   el.className = 'status' + (level ? ' ' + level : '');
 }
 function formatMs(ms) {
@@ -744,113 +984,75 @@ function formatMs(ms) {
 }
 function renderAccount() {
   const auth = loadAuth();
-  const loginBtn   = document.getElementById('btn-login');
-  const logoutBtn  = document.getElementById('btn-logout');
+  const loginBtn = document.getElementById('btn-login');
+  const logoutBtn = document.getElementById('btn-logout');
   const refreshBtn = document.getElementById('btn-refresh-now');
-  const rowName    = document.getElementById('row-display-name');
-  const rowExp     = document.getElementById('row-token-expiry');
-  const rowScopes  = document.getElementById('row-granted-scopes');
-
+  const rowName = document.getElementById('row-display-name');
+  const rowExp  = document.getElementById('row-token-expiry');
+  const rowScopes = document.getElementById('row-granted-scopes');
   if (!auth) {
-    loginBtn.style.display   = '';
-    logoutBtn.style.display  = 'none';
-    refreshBtn.style.display = 'none';
-    rowName.style.display    = 'none';
-    rowExp.style.display     = 'none';
-    rowScopes.style.display  = 'none';
-    if (!REDIRECT_URI) {
-      setAccountStatus('Disconnected. Cannot log in from this origin — see Environment.', 'warn');
-      loginBtn.disabled = true;
-    } else {
-      setAccountStatus('Disconnected.', '');
-      loginBtn.disabled = false;
-    }
+    loginBtn.style.display = ''; logoutBtn.style.display = 'none'; refreshBtn.style.display = 'none';
+    rowName.style.display = 'none'; rowExp.style.display = 'none'; rowScopes.style.display = 'none';
+    if (!REDIRECT_URI) { setAccountStatus('Disconnected. Cannot log in from this origin.', 'warn'); loginBtn.disabled = true; }
+    else { setAccountStatus('Disconnected.', ''); loginBtn.disabled = false; }
     return;
   }
-
-  loginBtn.style.display   = 'none';
-  logoutBtn.style.display  = '';
-  refreshBtn.style.display = '';
-  rowExp.style.display     = '';
-  rowScopes.style.display  = '';
-
+  loginBtn.style.display = 'none'; logoutBtn.style.display = ''; refreshBtn.style.display = '';
+  rowExp.style.display = ''; rowScopes.style.display = '';
   const remaining = auth.expiresAt - Date.now();
   document.getElementById('acc-token-expiry').textContent =
     `${formatMs(remaining)} until refresh (expires at ${new Date(auth.expiresAt).toLocaleTimeString()})`;
-
   const granted = (auth.scope || '').split(' ').filter(Boolean);
   const missing = SCOPES.filter(s => !granted.includes(s));
   const scopesEl = document.getElementById('acc-granted-scopes');
   scopesEl.textContent = granted.join(' ');
-  if (missing.length) {
-    scopesEl.textContent += `   ⚠ missing: ${missing.join(', ')}`;
-    scopesEl.style.color = 'var(--warn)';
-  } else {
-    scopesEl.style.color = '';
-  }
-
+  if (missing.length) { scopesEl.textContent += `   ⚠ missing: ${missing.join(', ')}`; scopesEl.style.color = 'var(--warn)'; }
+  else { scopesEl.style.color = ''; }
   if (_profile) {
     rowName.style.display = '';
     const av = document.getElementById('acc-avatar');
     const img = _profile.images?.[0]?.url;
     if (img) { av.src = img; av.style.display = ''; } else { av.style.display = 'none'; }
     document.getElementById('acc-display-name').textContent = _profile.display_name || _profile.id || '(no name)';
-    document.getElementById('acc-product').textContent =
-      `(${_profile.product || 'unknown'} · ${_profile.country || '??'})`;
+    document.getElementById('acc-product').textContent = `(${_profile.product || 'unknown'} · ${_profile.country || '??'})`;
     setAccountStatus('Connected.', 'ok');
-  } else {
-    setAccountStatus('Token present — fetching profile…', 'warn');
-  }
+  } else { setAccountStatus('Token present — fetching profile…', 'warn'); }
 }
 
 // ============================================================
 // UI — Player
 // ============================================================
 function setPlayerStatus(msg, level) {
-  const el = document.getElementById('player-status');
-  el.textContent = msg;
+  const el = document.getElementById('player-status'); el.textContent = msg;
   el.className = 'status' + (level ? ' ' + level : '');
 }
 function setPlayerMsg(msg, level) {
-  const el = document.getElementById('player-msg');
-  el.textContent = msg;
+  const el = document.getElementById('player-msg'); el.textContent = msg;
   el.className = 'status' + (level ? ' ' + level : '');
 }
-
 function renderPlayer() {
-  const rowDev    = document.getElementById('row-device-id');
-  const nowEl     = document.getElementById('now-playing');
-  const controls  = document.getElementById('player-controls');
-
+  const rowDev = document.getElementById('row-device-id');
+  const nowEl  = document.getElementById('now-playing');
+  const ctrls  = document.getElementById('player-controls');
   if (_deviceId) {
-    rowDev.style.display = '';
-    document.getElementById('player-device-id').textContent = _deviceId;
-    controls.style.display = '';
+    rowDev.style.display = ''; document.getElementById('player-device-id').textContent = _deviceId;
+    ctrls.style.display = '';
   } else {
-    rowDev.style.display = 'none';
-    controls.style.display = 'none';
+    rowDev.style.display = 'none'; ctrls.style.display = 'none';
   }
-
   if (_playerState && _playerState.track_window?.current_track) {
     const t = _playerState.track_window.current_track;
     nowEl.style.display = '';
     document.getElementById('now-art').src = t.album?.images?.[0]?.url || '';
     document.getElementById('now-title').textContent = t.name || '—';
-    document.getElementById('now-artist').textContent =
-      (t.artists || []).map(a => a.name).join(', ') || '—';
-    const pos = _playerState.position;
-    const dur = _playerState.duration;
-    document.getElementById('now-pos').textContent = formatTime(pos);
-    document.getElementById('now-dur').textContent = formatTime(dur);
-    const pct = dur > 0 ? (pos / dur) * 100 : 0;
+    document.getElementById('now-artist').textContent = (t.artists || []).map(a => a.name).join(', ') || '—';
+    document.getElementById('now-pos').textContent = formatTime(_playerState.position);
+    document.getElementById('now-dur').textContent = formatTime(_playerState.duration);
+    const pct = _playerState.duration > 0 ? (_playerState.position / _playerState.duration) * 100 : 0;
     document.getElementById('now-fill').style.width = pct + '%';
     document.getElementById('btn-playpause').textContent = _playerState.paused ? '▶' : '⏸';
-  } else {
-    nowEl.style.display = 'none';
-  }
+  } else { nowEl.style.display = 'none'; }
 }
-
-// Local clock for position bar between SDK state events (which only fire on change).
 function tickPosition() {
   if (!_playerState || _playerState.paused) return;
   const elapsed = Date.now() - (_playerState._timestamp || Date.now());
@@ -858,6 +1060,50 @@ function tickPosition() {
   document.getElementById('now-pos').textContent = formatTime(pos);
   const pct = _playerState.duration > 0 ? (pos / _playerState.duration) * 100 : 0;
   document.getElementById('now-fill').style.width = pct + '%';
+}
+
+// ============================================================
+// UI — Radio
+// ============================================================
+function setRadioMsg(msg, level) {
+  const el = document.getElementById('radio-msg'); el.textContent = msg;
+  el.className = 'status' + (level ? ' ' + level : '');
+}
+function updatePoolStats() {
+  document.getElementById('pool-heard').textContent = _heardPool.length;
+  document.getElementById('pool-new').textContent   = _newPool.length;
+  const ca = document.getElementById('pool-cache-age');
+  if (_newPoolBuiltAt) {
+    const ageMin = Math.floor((Date.now() - _newPoolBuiltAt) / 60000);
+    ca.textContent = `cache: ${ageMin}m old`;
+  } else { ca.textContent = 'cache: never'; }
+}
+function updateRadioButtons() {
+  document.getElementById('btn-start-radio').style.display = _radioActive ? 'none' : '';
+  document.getElementById('btn-stop-radio').style.display  = _radioActive ? '' : 'none';
+}
+function renderQueue() {
+  const el = document.getElementById('queue-list');
+  if (!_queue.length) {
+    el.innerHTML = '<div class="status">(queue empty — build pools and click Start radio)</div>';
+    return;
+  }
+  el.innerHTML = '';
+  // Show 2 prior + current + next 12
+  const start = Math.max(0, _queueIndex - 2);
+  const end   = Math.min(_queue.length, _queueIndex + 13);
+  for (let i = start; i < end; i++) {
+    const it = _queue[i];
+    const row = document.createElement('div');
+    row.className = 'q-row' + (i === _queueIndex ? ' current' : '');
+    row.innerHTML = `
+      <span class="q-current-marker">${i === _queueIndex ? '▶' : ''}</span>
+      <span class="q-kind ${it.kind}">${it.kind}</span>
+      <span class="q-track"></span>
+      <span class="mono" style="opacity:.5">#${i + 1}</span>`;
+    row.querySelector('.q-track').textContent = `${it.artist} — ${it.name}`;
+    el.appendChild(row);
+  }
 }
 
 // ============================================================
@@ -916,35 +1162,35 @@ async function init() {
     writeForm({ ...DEFAULTS }); setStatus('Form reset to defaults — click Save to persist.', 'warn');
   });
   document.getElementById('btn-clear').addEventListener('click', async () => {
-    if (!confirm('Wipe ALL stored data for this site? (settings, auth tokens, caches)')) return;
+    if (!confirm('Wipe ALL stored data for this site? (settings, auth tokens, new-pool cache)')) return;
     await disconnectPlayer();
     localStorage.clear();
     writeForm({ ...DEFAULTS });
     _profile = null;
     if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
-    _playlists = [];
-    renderAccount(); renderPlayer(); renderPlaylists(); renderDebugStorage();
+    _playlists = []; _heardPool = []; _newPool = []; _newPoolBuiltAt = null;
+    _queue = []; _queueIndex = 0; _radioActive = false;
+    renderAccount(); renderPlayer(); renderPlaylists(); renderQueue();
+    updatePoolStats(); updateRadioButtons(); renderDebugStorage();
     setStatus('All localStorage cleared.', 'warn');
   });
 
   // Account
   document.getElementById('btn-login').addEventListener('click', () => login());
   document.getElementById('btn-logout').addEventListener('click', async () => {
-    await disconnectPlayer();
-    clearAuth();
-    _playlists = [];
-    renderAccount(); renderPlayer(); renderPlaylists(); renderDebugStorage();
+    await disconnectPlayer(); clearAuth();
+    _playlists = []; _heardPool = []; _newPool = []; _newPoolBuiltAt = null;
+    _queue = []; _queueIndex = 0; _radioActive = false;
+    renderAccount(); renderPlayer(); renderPlaylists(); renderQueue();
+    updatePoolStats(); updateRadioButtons(); renderDebugStorage();
   });
   document.getElementById('btn-refresh-now').addEventListener('click', async () => {
     try {
       setAccountStatus('Refreshing token manually…', 'warn');
-      await refreshAccessToken();
-      scheduleRefresh();
+      await refreshAccessToken(); scheduleRefresh();
       renderAccount(); renderDebugStorage();
       setAccountStatus('Token refreshed.', 'ok');
-    } catch (e) {
-      setAccountStatus(`Refresh failed: ${e.message}`, 'err');
-    }
+    } catch (e) { setAccountStatus(`Refresh failed: ${e.message}`, 'err'); }
   });
 
   // Player controls
@@ -953,20 +1199,16 @@ async function init() {
     try { await _player.togglePlay(); } catch (e) { setPlayerMsg(`Toggle play failed: ${e.message}`, 'err'); }
   });
   document.getElementById('btn-prev').addEventListener('click', async () => {
-    if (!_player) return;
-    try { await _player.previousTrack(); } catch (e) { setPlayerMsg(`Previous failed: ${e.message}`, 'err'); }
+    if (_radioActive) { try { await playQueueAt(_queueIndex - 1); } catch (e) { setPlayerMsg(`Prev failed: ${e.message}`, 'err'); } return; }
+    if (_player) { try { await _player.previousTrack(); } catch (e) { setPlayerMsg(`Prev failed: ${e.message}`, 'err'); } }
   });
   document.getElementById('btn-next').addEventListener('click', async () => {
-    if (!_player) return;
-    try { await _player.nextTrack(); } catch (e) { setPlayerMsg(`Next failed: ${e.message}`, 'err'); }
+    if (_radioActive) { try { await playQueueAt(_queueIndex + 1); } catch (e) { setPlayerMsg(`Next failed: ${e.message}`, 'err'); } return; }
+    if (_player) { try { await _player.nextTrack(); } catch (e) { setPlayerMsg(`Next failed: ${e.message}`, 'err'); } }
   });
   document.getElementById('btn-transfer').addEventListener('click', async () => {
-    try {
-      await transferPlaybackHere(false);
-      setPlayerMsg('Transferred playback to this tab.', 'ok');
-    } catch (e) {
-      setPlayerMsg(`Transfer failed: ${e.message}`, 'err');
-    }
+    try { await transferPlaybackHere(false); setPlayerMsg('Transferred playback to this tab.', 'ok'); }
+    catch (e) { setPlayerMsg(`Transfer failed: ${e.message}`, 'err'); }
   });
 
   // Playlists
@@ -975,62 +1217,97 @@ async function init() {
     try {
       statusEl.textContent = 'Loading…'; statusEl.className = 'status warn';
       _playlists = await fetchPlaylists();
-      statusEl.textContent = `Loaded ${_playlists.length} playlist(s).`;
-      statusEl.className = 'status ok';
+      statusEl.textContent = `Loaded ${_playlists.length} playlist(s).`; statusEl.className = 'status ok';
       renderPlaylists();
-    } catch (e) {
-      statusEl.textContent = `Failed: ${e.message}`;
-      statusEl.className = 'status err';
+    } catch (e) { statusEl.textContent = `Failed: ${e.message}`; statusEl.className = 'status err'; }
+  });
+
+  // Radio buttons
+  document.getElementById('btn-build-heard').addEventListener('click', async () => {
+    const chosen = document.getElementById('set-heard-playlist').value || null;
+    try {
+      setRadioMsg('Building heard pool…', 'warn');
+      _heardPool = await buildHeardPool(chosen, msg => setRadioMsg(msg, 'warn'));
+      updatePoolStats();
+      setRadioMsg(`Heard pool: ${_heardPool.length} unique tracks.`, 'ok');
+      renderDebugStorage();
+    } catch (e) { setRadioMsg(`Heard pool failed: ${e.message}`, 'err'); }
+  });
+
+  document.getElementById('btn-build-new').addEventListener('click', async () => {
+    const settings = loadSettings();
+    if (!settings.anthropicKey) { setRadioMsg('Set your Anthropic API key in Settings first.', 'err'); return; }
+    if (!_heardPool.length) {
+      if (!confirm('Heard pool is empty — new tracks won\'t be filtered. Build heard pool first?')) {
+        return;
+      }
+      // Allow continuing — user said no, they want to proceed anyway. Actually confirm returns true=OK, so:
     }
+    try {
+      const heardSet = new Set(_heardPool.map(t => t.uri));
+      setRadioMsg('Calling Claude for suggestions…', 'warn');
+      _newPool = await buildNewPool(heardSet, 30, msg => setRadioMsg(msg, 'warn'));
+      _newPoolBuiltAt = Date.now();
+      saveCachedNewPool(_newPool);
+      updatePoolStats();
+      setRadioMsg(`New pool: ${_newPool.length} unique tracks (after dedupe vs heard).`, 'ok');
+      renderDebugStorage();
+    } catch (e) { setRadioMsg(`New pool failed: ${e.message}`, 'err'); }
+  });
+
+  document.getElementById('btn-start-radio').addEventListener('click', async () => {
+    try {
+      setRadioMsg('Building queue…', 'warn');
+      await startRadio();
+      setRadioMsg(`Radio on. ${_queue.length} tracks queued.`, 'ok');
+    } catch (e) { setRadioMsg(`Start failed: ${e.message}`, 'err'); }
+  });
+  document.getElementById('btn-stop-radio').addEventListener('click', () => {
+    stopRadio(); setRadioMsg('Radio stopped.', '');
   });
 
   // OAuth redirect callback
   const handled = await handleRedirectCallback();
   if (handled) scheduleRefresh();
 
-  renderAccount();
-  renderPlayer();
-  renderPlaylists();
-  renderDebugStorage();
+  // Load cached new pool
+  const cached = loadCachedNewPool();
+  if (cached?.tracks?.length) {
+    _newPool = cached.tracks;
+    _newPoolBuiltAt = cached.builtAt;
+  }
 
-  // Live ticking — token expiry + position bar
+  renderAccount(); renderPlayer(); renderPlaylists(); renderQueue();
+  updatePoolStats(); updateRadioButtons(); renderDebugStorage();
+
   setInterval(() => {
     if (loadAuth()) {
       const auth = loadAuth();
       const remaining = auth.expiresAt - Date.now();
       const el = document.getElementById('acc-token-expiry');
       if (el && document.getElementById('row-token-expiry').style.display !== 'none') {
-        el.textContent =
-          `${formatMs(remaining)} until refresh (expires at ${new Date(auth.expiresAt).toLocaleTimeString()})`;
+        el.textContent = `${formatMs(remaining)} until refresh (expires at ${new Date(auth.expiresAt).toLocaleTimeString()})`;
       }
     }
     tickPosition();
+    updatePoolStats();
   }, 1000);
 
-  // Post-login bring-up: profile → player → playlists
+  // Post-login bring-up
   if (loadAuth() && !_profile) {
     try {
       _profile = await fetchProfile();
       scheduleRefresh();
       renderAccount(); renderDebugStorage();
-
-      // Spin up player — premium required
-      try {
-        await initPlayer();
-      } catch (e) {
-        setPlayerStatus(`Player init failed: ${e.message}`, 'err');
-      }
-      // Auto-load playlists once after login
+      try { await initPlayer(); } catch (e) { setPlayerStatus(`Player init failed: ${e.message}`, 'err'); }
       try {
         _playlists = await fetchPlaylists();
         const ps = document.getElementById('playlists-status');
-        ps.textContent = `Loaded ${_playlists.length} playlist(s).`;
-        ps.className = 'status ok';
+        ps.textContent = `Loaded ${_playlists.length} playlist(s).`; ps.className = 'status ok';
         renderPlaylists();
       } catch (e) {
         const ps = document.getElementById('playlists-status');
-        ps.textContent = `Playlists failed: ${e.message}`;
-        ps.className = 'status err';
+        ps.textContent = `Playlists failed: ${e.message}`; ps.className = 'status err';
       }
     } catch (e) {
       setAccountStatus(`Profile fetch failed: ${e.message} — clearing token.`, 'err');
@@ -1042,6 +1319,9 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// Expose pure functions on window for ad-hoc console-based testing.
+window._pure = { mixQueue, parseSuggestionsJson, trackInfo, pkceVerifier, pkceChallenge, shuffleArray, clampInt, formatTime };
 </script>
 </body>
 </html>
