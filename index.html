@@ -113,8 +113,8 @@
 </head>
 <body>
   <header>
-    <h1>AI Radio Host <span class="pill">P3</span></h1>
-    <div class="phase">Mix engine — DJ patter arrives in P5</div>
+    <h1>AI Radio Host <span class="pill">P4</span></h1>
+    <div class="phase">Gap detection + placeholder beep — DJ patter arrives in P5</div>
   </header>
   <main>
 
@@ -430,6 +430,22 @@ function parseSuggestionsJson(text) {
   if (!Array.isArray(arr)) throw new Error('parsed value is not an array');
   return arr.filter(x => x && typeof x.title === 'string' && typeof x.artist === 'string')
             .map(x => ({ title: x.title.trim(), artist: x.artist.trim() }));
+}
+
+/**
+ * PURE: Decide whether to start the between-songs segment.
+ * True if a track is well into playback AND <= leadMs from its end.
+ * Guards against firing for very short tracks (where the gap would
+ * dominate playback) and for invalid/zero durations.
+ */
+function shouldTriggerSegment(positionMs, durationMs, leadMs = 5000) {
+  if (!Number.isFinite(positionMs) || !Number.isFinite(durationMs)) return false;
+  if (durationMs <= 0) return false;
+  if (positionMs < 0) return false;
+  // Tracks shorter than 2× the lead window: let them play to the end, fall back to the
+  // SDK's "track ended" auto-advance. Otherwise gap takes too large a share of the song.
+  if (durationMs <= leadMs * 2) return false;
+  return (durationMs - positionMs) <= leadMs;
 }
 
 /**
@@ -871,7 +887,14 @@ let _newPoolBuiltAt = null;
 let _queue     = [];   // [{uri, name, artist, kind}]
 let _queueIndex = 0;
 let _radioActive = false;
-let _lastTrackEndUri = null;  // to avoid double-advancing
+let _lastTrackEndUri = null;  // safety-net auto-advance guard
+
+// P4 — gap detection
+const SEGMENT_LEAD_MS = 5000;     // trigger gap this many ms before track end
+const BEEP_MS         = 600;      // placeholder beep duration (P5 replaces with DJ patter)
+let _gapInProgress    = false;    // true between pause-for-gap and play-next
+let _gapTriggeredForUri = null;   // URI that already triggered, so we don't re-fire
+let _audioCtx         = null;     // lazy-initialized; resumed on first beep
 
 function loadCachedNewPool() {
   try {
@@ -893,6 +916,9 @@ async function startRadio() {
   _queue = mixQueue(heardShuf, newShuf, settings.mixRatio, 100);
   _queueIndex = 0;
   _radioActive = true;
+  _gapTriggeredForUri = null;
+  _gapInProgress = false;
+  _lastTrackEndUri = null;
   updateRadioButtons();
   renderQueue();
   if (_queue.length) await playQueueAt(0);
@@ -911,23 +937,97 @@ async function playQueueAt(i) {
   }
   _queueIndex = i;
   _lastTrackEndUri = null;
+  _gapTriggeredForUri = null;   // new track → re-arm gap trigger
   await playUri(_queue[i].uri);
   renderQueue();
 }
 
-// In P3, the only auto-advance trigger is the SDK going from "playing a track"
-// to "paused at position 0" — meaning the single-track playback finished.
-// P4 will replace this with proper gap detection ~5s before end.
+// Web Audio: simple placeholder beep. P5/P6 will replace this with the TTS DJ patter.
+async function playBeep(ms = BEEP_MS, freq = 600) {
+  if (!_audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) throw new Error('Web Audio API not available in this browser');
+    _audioCtx = new Ctx();
+  }
+  if (_audioCtx.state === 'suspended') {
+    try { await _audioCtx.resume(); } catch (_) {}
+  }
+  return new Promise(resolve => {
+    const osc  = _audioCtx.createOscillator();
+    const gain = _audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    // Short ADSR envelope so the beep doesn't click.
+    const t = _audioCtx.currentTime;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.18, t + 0.03);
+    gain.gain.setValueAtTime(0.18, t + (ms / 1000) - 0.05);
+    gain.gain.linearRampToValueAtTime(0, t + (ms / 1000));
+    osc.connect(gain).connect(_audioCtx.destination);
+    osc.start();
+    osc.stop(t + (ms / 1000) + 0.02);
+    osc.onended = () => resolve();
+  });
+}
+
+// The gap: pause the current track ~5s before end, play the segment (just a beep in P4),
+// then play the next queued URI. Single-flight via _gapInProgress.
+async function runGap(reason = 'lead-time') {
+  if (_gapInProgress) return;
+  _gapInProgress = true;
+  try {
+    setRadioMsg(`Gap (${reason}): pausing for segment…`, 'warn');
+    if (_player) { try { await _player.pause(); } catch (_) {} }
+    setRadioMsg('Gap: 🔔 placeholder beep (P5 replaces with DJ patter)…', 'warn');
+    try { await playBeep(BEEP_MS); } catch (e) { console.warn('beep failed', e); }
+    setRadioMsg('Gap: advancing to next track…', 'warn');
+    await playQueueAt(_queueIndex + 1);
+    setRadioMsg('Radio playing.', 'ok');
+  } catch (e) {
+    setRadioMsg(`Gap failed: ${e.message}`, 'err');
+  } finally {
+    _gapInProgress = false;
+  }
+}
+
+// Predict position from the last player_state_changed event, since the SDK
+// only fires events on state CHANGES (pause/play/seek/track change), not every second.
+function predictedPosition() {
+  if (!_playerState) return { pos: 0, dur: 0 };
+  const elapsed = _playerState.paused ? 0 : (Date.now() - (_playerState._timestamp || Date.now()));
+  return {
+    pos: Math.min(_playerState.duration, _playerState.position + elapsed),
+    dur: _playerState.duration,
+  };
+}
+
+// Called on a fast interval. Detects when to fire the gap.
+function tickGapDetection() {
+  if (!_radioActive)   return;
+  if (_gapInProgress)  return;
+  if (!_playerState)   return;
+  if (_playerState.paused) return;
+  const { pos, dur } = predictedPosition();
+  if (!shouldTriggerSegment(pos, dur, SEGMENT_LEAD_MS)) return;
+  const curUri = _playerState.track_window?.current_track?.uri;
+  if (!curUri) return;
+  if (curUri === _gapTriggeredForUri) return;  // already fired for this track
+  _gapTriggeredForUri = curUri;
+  runGap('lead-time').catch(e => console.error('gap error', e));
+}
+
+// Safety net: if a very short track ends without the gap firing (track duration
+// < 2× lead window), the SDK reports paused + position 0. Advance once.
 function onPlayerStateChange(state) {
   if (!_radioActive) return;
   if (!state) return;
-  const cur = state.track_window?.current_track?.uri;
-  // Track ended: paused + position 0 + previous_tracks contains what we just played.
+  if (_gapInProgress) return;  // don't fight with the gap
   if (state.paused && state.position === 0 && state.track_window?.previous_tracks?.length > 0) {
-    // Guard against double-fires from the SDK by tagging the URI we just advanced past.
     const expected = _queue[_queueIndex]?.uri;
+    const cur = state.track_window?.current_track?.uri;
     if (expected && _lastTrackEndUri !== expected && cur !== expected) {
       _lastTrackEndUri = expected;
+      setRadioMsg('Short track ended without gap — auto-advancing.', 'warn');
       playQueueAt(_queueIndex + 1).catch(e => setRadioMsg(`Auto-advance failed: ${e.message}`, 'err'));
     }
   }
@@ -1293,6 +1393,10 @@ async function init() {
     updatePoolStats();
   }, 1000);
 
+  // Fast tick for gap detection. 250ms gives sub-second accuracy on the 5s lead window
+  // without burning much CPU.
+  setInterval(tickGapDetection, 250);
+
   // Post-login bring-up
   if (loadAuth() && !_profile) {
     try {
@@ -1321,7 +1425,7 @@ async function init() {
 document.addEventListener('DOMContentLoaded', init);
 
 // Expose pure functions on window for ad-hoc console-based testing.
-window._pure = { mixQueue, parseSuggestionsJson, trackInfo, pkceVerifier, pkceChallenge, shuffleArray, clampInt, formatTime };
+window._pure = { mixQueue, parseSuggestionsJson, trackInfo, pkceVerifier, pkceChallenge, shuffleArray, clampInt, formatTime, shouldTriggerSegment };
 </script>
 </body>
 </html>
