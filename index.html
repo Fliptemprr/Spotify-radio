@@ -113,8 +113,8 @@
 </head>
 <body>
   <header>
-    <h1>AI Radio Host <span class="pill">P7</span></h1>
-    <div class="phase">Pre-generated gaps — final controls arrive in P8</div>
+    <h1>AI Radio Host <span class="pill">P8</span></h1>
+    <div class="phase">Full controls — complete</div>
   </header>
   <main>
 
@@ -209,6 +209,8 @@
         <button id="btn-build-new" class="secondary">2. Build new pool (Claude · ~$0.01)</button>
         <button id="btn-start-radio">3. Start radio</button>
         <button id="btn-stop-radio" class="secondary" style="display:none">Stop radio</button>
+        <button id="btn-skip-segment" class="secondary" title="Skip the DJ patter and jump straight to the next track">Skip segment</button>
+        <button id="btn-remix" class="secondary" title="Re-mix the upcoming queue using the current mix-ratio">Re-mix upcoming</button>
         <span id="radio-msg" class="status"></span>
       </div>
       <div class="row" style="margin-top:14px">
@@ -320,6 +322,23 @@
           <span class="ratio-val" id="set-talk-every-val">…</span>
         </div>
         <div class="hint">1 = patter after every song. 3 = quiet gaps between, patter every 3rd. Higher = more music, less DJ. Quiet gaps cut only ~0.5s; talk gaps cut ~5s to make room for the patter.</div>
+      </div>
+
+      <div class="row">
+        <label for="set-segment-sentences">DJ segment length</label>
+        <div style="display:flex;align-items:center;gap:12px">
+          <input id="set-segment-sentences" type="range" min="1" max="4" step="1">
+          <span class="ratio-val" id="set-segment-sentences-val">…</span>
+        </div>
+        <div class="hint">Max sentences per DJ patter. 1 = terse, 2 = default, 4 = chatty.</div>
+      </div>
+
+      <div class="row">
+        <label for="set-news-enabled">Include news headlines</label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input id="set-news-enabled" type="checkbox">
+          <span class="hint" style="grid-column:auto;margin:0">When off, the DJ skips news entirely (no RSS fetch).</span>
+        </div>
       </div>
 
       <div class="toolbar">
@@ -547,6 +566,8 @@ const DEFAULTS = Object.freeze({
   rssProxy:        'https://api.allorigins.win/raw?url=',
   mixRatio:        30,
   talkEverySongs:  1,     // 1 = talk every gap; 3 = talk every 3rd gap; etc.
+  segmentSentences: 2,    // DJ patter length cap (1-4)
+  newsEnabled:     true,  // weave RSS headlines into the patter
 });
 function loadSettings() {
   try { const raw = localStorage.getItem(SETTINGS_KEY); return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS }; }
@@ -946,7 +967,8 @@ async function buildNewPool(heardSet, count = 30, onProgress = () => {}) {
 const ELEVENLABS_TTS_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
 const OPENAI_TTS_URL     = 'https://api.openai.com/v1/audio/speech';
 
-let _currentTtsAudio = null;  // ref so stopTts() can cancel mid-flight
+let _currentTtsAudio = null;     // ref so stopTts() can cancel mid-flight
+let _ttsCancelResolve = null;    // resolver for the in-flight speak() promise
 
 function stopTts() {
   if (window.speechSynthesis) {
@@ -956,6 +978,12 @@ function stopTts() {
     try { _currentTtsAudio.pause(); } catch (_) {}
     try { _currentTtsAudio.src = ''; } catch (_) {}
     _currentTtsAudio = null;
+  }
+  // Resolve (not reject) any awaiting speak() so callers proceed cleanly on skip/stop.
+  if (_ttsCancelResolve) {
+    const r = _ttsCancelResolve;
+    _ttsCancelResolve = null;
+    r();
   }
 }
 
@@ -989,8 +1017,14 @@ function speakBrowser(text) {
               || voices.find(v => /^en[-_]/i.test(v.lang));
       if (en) u.voice = en;
     } catch (_) {}
-    u.onend   = () => resolve();
-    u.onerror = (e) => reject(new Error(`SpeechSynthesis error: ${e.error || 'unknown'}`));
+    _ttsCancelResolve = resolve;
+    u.onend   = () => { if (_ttsCancelResolve === resolve) _ttsCancelResolve = null; resolve(); };
+    u.onerror = (e) => {
+      if (_ttsCancelResolve === resolve) _ttsCancelResolve = null;
+      // Treat user-initiated cancel/interrupt as a normal stop, not an error.
+      if (e.error === 'interrupted' || e.error === 'canceled') resolve();
+      else reject(new Error(`SpeechSynthesis error: ${e.error || 'unknown'}`));
+    };
     try { window.speechSynthesis.cancel(); } catch (_) {}
     window.speechSynthesis.speak(u);
   });
@@ -1060,9 +1094,11 @@ function playAudioBlob(blob) {
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     _currentTtsAudio = audio;
+    _ttsCancelResolve = resolve;  // lets stopTts() resolve this on skip/stop
     const cleanup = () => {
       URL.revokeObjectURL(url);
       if (_currentTtsAudio === audio) _currentTtsAudio = null;
+      if (_ttsCancelResolve === resolve) _ttsCancelResolve = null;
     };
     audio.onended = () => { cleanup(); resolve(); };
     audio.onerror = () => { cleanup(); reject(new Error('audio playback error')); };
@@ -1204,6 +1240,36 @@ function stopRadio() {
   updateRadioButtons();
 }
 
+// Skip the current DJ patter: cancel TTS so the awaiting runGap proceeds to the
+// next track immediately. If no gap is in progress, behaves like "next track".
+async function skipSegment() {
+  if (_gapInProgress) {
+    setRadioMsg('Skipping segment…', 'warn');
+    stopTts();   // resolves the in-flight speak(), runGap continues to playQueueAt
+  } else if (_radioActive) {
+    await playQueueAt(_queueIndex + 1);
+  }
+}
+
+// Re-mix the queue from the current position onward using the current mix-ratio,
+// without interrupting the currently-playing track.
+function remixUpcoming() {
+  if (!_queue.length) { setRadioMsg('Nothing to re-mix — start radio first.', 'warn'); return; }
+  const settings = loadSettings();
+  const heardShuf = shuffleArray([..._heardPool]);
+  const newShuf   = shuffleArray([..._newPool]);
+  const fresh = mixQueue(heardShuf, newShuf, settings.mixRatio, 100);
+  // Keep everything up to and including the current track; replace the tail.
+  _queue = _queue.slice(0, _queueIndex + 1).concat(fresh);
+  clearPreparedSegment();  // upcoming changed → invalidate pre-gen
+  renderQueue();
+  setRadioMsg(`Re-mixed upcoming at ${settings.mixRatio}% new.`, 'ok');
+  // Re-arm pre-gen for the new next track
+  if (_radioActive && _queueIndex + 1 < _queue.length && nextGapWillTalk()) {
+    prepareSegment(_queue[_queueIndex], _queue[_queueIndex + 1]).catch(() => {});
+  }
+}
+
 async function playQueueAt(i) {
   if (i < 0 || i >= _queue.length) {
     setRadioMsg('End of queue. Click Start radio to refill.', 'warn');
@@ -1327,13 +1393,15 @@ async function produceDjScriptOrFallback(justPlayed, upcoming) {
   if (!upcoming) return '(nothing queued)';
   const settings = loadSettings();
   let headlines = [];
-  try {
-    headlines = await fetchHeadlines(settings.rssFeed, settings.rssProxy);
-  } catch (e) {
-    console.warn('Headlines fetch failed — continuing without:', e);
+  if (settings.newsEnabled) {
+    try {
+      headlines = await fetchHeadlines(settings.rssFeed, settings.rssProxy);
+    } catch (e) {
+      console.warn('Headlines fetch failed — continuing without:', e);
+    }
   }
   try {
-    return await generateDjScript({ upcomingTrack: upcoming, justPlayed, headlines, maxSentences: 2 });
+    return await generateDjScript({ upcomingTrack: upcoming, justPlayed, headlines, maxSentences: settings.segmentSentences });
   } catch (e) {
     console.warn('Claude DJ generation failed, using template fallback:', e);
     const kindPhrase = upcoming.kind === 'new'
@@ -1477,6 +1545,8 @@ function readForm() {
     rssProxy:        document.getElementById('set-rss-proxy').value.trim(),
     mixRatio:        clampInt(document.getElementById('set-mix-ratio').value, 0, 100),
     talkEverySongs:  clampInt(document.getElementById('set-talk-every').value, 1, 10),
+    segmentSentences: clampInt(document.getElementById('set-segment-sentences').value, 1, 4),
+    newsEnabled:     document.getElementById('set-news-enabled').checked,
   };
 }
 function writeForm(s) {
@@ -1492,6 +1562,9 @@ function writeForm(s) {
   document.getElementById('set-mix-ratio-val').textContent = s.mixRatio + '% new';
   document.getElementById('set-talk-every').value       = String(s.talkEverySongs);
   document.getElementById('set-talk-every-val').textContent = s.talkEverySongs === 1 ? 'every song' : `every ${s.talkEverySongs}`;
+  document.getElementById('set-segment-sentences').value = String(s.segmentSentences);
+  document.getElementById('set-segment-sentences-val').textContent = s.segmentSentences === 1 ? '1 sentence' : `${s.segmentSentences} sentences`;
+  document.getElementById('set-news-enabled').checked   = !!s.newsEnabled;
   applyTtsProviderVisibility(s.ttsProvider);
 }
 function applyTtsProviderVisibility(provider) {
@@ -1702,6 +1775,10 @@ async function init() {
     const n = parseInt(e.target.value, 10);
     document.getElementById('set-talk-every-val').textContent = n === 1 ? 'every song' : `every ${n}`;
   });
+  document.getElementById('set-segment-sentences').addEventListener('input', e => {
+    const n = parseInt(e.target.value, 10);
+    document.getElementById('set-segment-sentences-val').textContent = n === 1 ? '1 sentence' : `${n} sentences`;
+  });
   document.getElementById('btn-save').addEventListener('click', () => {
     const next = readForm(); saveSettings(next); writeForm(next); renderDebugStorage();
     clearPreparedSegment();   // settings change may invalidate pre-gen
@@ -1815,6 +1892,12 @@ async function init() {
   });
   document.getElementById('btn-stop-radio').addEventListener('click', () => {
     stopRadio(); setRadioMsg('Radio stopped.', '');
+  });
+  document.getElementById('btn-skip-segment').addEventListener('click', () => {
+    skipSegment().catch(e => setRadioMsg(`Skip failed: ${e.message}`, 'err'));
+  });
+  document.getElementById('btn-remix').addEventListener('click', () => {
+    remixUpcoming();
   });
 
   document.getElementById('btn-test-voice').addEventListener('click', async () => {
