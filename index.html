@@ -113,8 +113,8 @@
 </head>
 <body>
   <header>
-    <h1>AI Radio Host <span class="pill">P6</span></h1>
-    <div class="phase">Voiced DJ patter in gaps — continuous loop arrives in P7</div>
+    <h1>AI Radio Host <span class="pill">P7</span></h1>
+    <div class="phase">Pre-generated gaps — final controls arrive in P8</div>
   </header>
   <main>
 
@@ -199,6 +199,10 @@
       <div class="row">
         <label>Next DJ in</label>
         <div id="talk-countdown" class="mono">—</div>
+      </div>
+      <div class="row">
+        <label>Pre-gen status</label>
+        <div id="prep-status" class="mono">—</div>
       </div>
       <div class="toolbar">
         <button id="btn-build-heard" class="secondary">1. Build heard pool</button>
@@ -992,9 +996,9 @@ function speakBrowser(text) {
   });
 }
 
-async function speakElevenLabs(text, key, voiceId) {
-  if (!key)      throw new Error('ElevenLabs API key not set in Settings');
-  if (!voiceId)  throw new Error('ElevenLabs voice ID not set in Settings');
+async function fetchElevenLabsBlob(text, key, voiceId) {
+  if (!key)     throw new Error('ElevenLabs API key not set in Settings');
+  if (!voiceId) throw new Error('ElevenLabs voice ID not set in Settings');
   const r = await fetch(`${ELEVENLABS_TTS_URL}/${encodeURIComponent(voiceId)}`, {
     method: 'POST',
     headers: {
@@ -1009,11 +1013,10 @@ async function speakElevenLabs(text, key, voiceId) {
     }),
   });
   if (!r.ok) throw new Error(`ElevenLabs HTTP ${r.status}: ${await r.text()}`);
-  const blob = await r.blob();
-  return playAudioBlob(blob);
+  return r.blob();
 }
 
-async function speakOpenAI(text, key) {
+async function fetchOpenAITtsBlob(text, key) {
   if (!key) throw new Error('OpenAI API key not set in Settings');
   const r = await fetch(OPENAI_TTS_URL, {
     method: 'POST',
@@ -1029,8 +1032,27 @@ async function speakOpenAI(text, key) {
     }),
   });
   if (!r.ok) throw new Error(`OpenAI TTS HTTP ${r.status}: ${await r.text()}`);
-  const blob = await r.blob();
-  return playAudioBlob(blob);
+  return r.blob();
+}
+
+async function speakElevenLabs(text, key, voiceId) {
+  return playAudioBlob(await fetchElevenLabsBlob(text, key, voiceId));
+}
+
+async function speakOpenAI(text, key) {
+  return playAudioBlob(await fetchOpenAITtsBlob(text, key));
+}
+
+// Pre-fetch the TTS blob for a given provider/text — used by P7 segment pre-gen.
+// Returns null for 'browser' (cannot pre-render SpeechSynthesis).
+async function fetchTtsBlob(text) {
+  const settings = loadSettings();
+  switch (settings.ttsProvider) {
+    case 'elevenlabs': return fetchElevenLabsBlob(text, settings.elevenLabsKey, settings.elevenLabsVoice);
+    case 'openai':     return fetchOpenAITtsBlob(text, settings.openAiKey);
+    case 'browser':
+    default:           return null;
+  }
 }
 
 function playAudioBlob(blob) {
@@ -1139,6 +1161,12 @@ let _gapTriggeredForUri = null;   // URI that already triggered, so we don't re-
 let _audioCtx         = null;     // lazy-initialized; resumed on first beep
 let _songsSinceLastTalk = 0;      // counter for "talk every N songs"
 
+// P7 — pre-generated segment cache
+// Holds the DJ text (and optionally audio blob) for an upcoming track URI.
+// "Consume" on use; cleared on logout / radio stop / settings change.
+let _preparedSegment = null;      // { uri, djText, audioBlob, provider }
+let _preparingFor    = null;      // URI we're currently preparing for (race guard)
+
 function loadCachedNewPool() {
   try {
     const raw = localStorage.getItem(NEWPOOL_KEY);
@@ -1172,6 +1200,7 @@ async function startRadio() {
 function stopRadio() {
   _radioActive = false;
   stopTts();
+  clearPreparedSegment();
   updateRadioButtons();
 }
 
@@ -1186,6 +1215,16 @@ async function playQueueAt(i) {
   _gapTriggeredForUri = null;   // new track → re-arm gap trigger
   await playUri(_queue[i].uri);
   renderQueue();
+
+  // P7: kick off background pre-gen for the next gap.
+  // Only if (a) radio still active, (b) there IS a next item, (c) the next gap is a TALK gap.
+  if (_radioActive && i + 1 < _queue.length && nextGapWillTalk()) {
+    const justPlayed = _queue[i];
+    const upcoming   = _queue[i + 1];
+    prepareSegment(justPlayed, upcoming).catch(e => console.warn('prepareSegment background error:', e));
+  } else {
+    setPrepStatus(nextGapWillTalk() ? '—' : '(quiet gap — nothing to prepare)', '');
+  }
 }
 
 // Web Audio: simple placeholder beep. P5/P6 will replace this with the TTS DJ patter.
@@ -1237,13 +1276,26 @@ async function runGap(reason = 'lead-time') {
     const nextItem = _queue[_queueIndex + 1];
 
     if (willTalk && nextItem) {
-      setRadioMsg('Gap: generating DJ patter…', 'warn');
-      const djText = await produceDjScriptOrFallback(curItem, nextItem);
+      // P7: try cached pre-generated segment first
+      let djText, audioBlob = null;
+      const prepared = consumePreparedSegment(nextItem.uri);
+      if (prepared) {
+        djText = prepared.djText;
+        audioBlob = prepared.audioBlob;
+        setRadioMsg('Gap: using pre-generated patter ⚡', 'ok');
+      } else {
+        setRadioMsg('Gap: generating DJ patter live (no cache hit)…', 'warn');
+        djText = await produceDjScriptOrFallback(curItem, nextItem);
+      }
       setDjText(djText);
       const provider = loadSettings().ttsProvider;
       setRadioMsg(`Gap: 🎙 voicing patter via ${provider}…`, 'warn');
       try {
-        await speak(djText);
+        if (audioBlob) {
+          await playAudioBlob(audioBlob);
+        } else {
+          await speak(djText);
+        }
       } catch (e) {
         console.warn('TTS failed, falling back to beep:', e);
         setRadioMsg(`TTS failed (${e.message}) — beep instead.`, 'warn');
@@ -1301,6 +1353,68 @@ function setDjMsg(msg, level) {
   if (!el) return;
   el.textContent = msg;
   el.className = 'status' + (level ? ' ' + level : '');
+}
+
+function setPrepStatus(msg, level) {
+  const el = document.getElementById('prep-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'mono ' + (level === 'ok' ? '' : 'status' + (level ? ' ' + level : ''));
+  // Override mono color when status level applies
+  if (level === 'ok')   el.style.color = 'var(--accent)';
+  else if (level === 'warn') el.style.color = 'var(--warn)';
+  else if (level === 'err')  el.style.color = 'var(--danger)';
+  else el.style.color = '';
+}
+
+// Pre-fetch the upcoming gap's DJ patter + (if paid TTS) audio blob.
+// Runs in the background while the current song is playing. Single-flight per URI.
+// Cache is keyed by upcoming track URI + provider so a settings change invalidates it.
+async function prepareSegment(justPlayed, upcoming) {
+  if (!upcoming) return;
+  if (_preparingFor === upcoming.uri) return;            // already in flight
+  if (_preparedSegment && _preparedSegment.uri === upcoming.uri &&
+      _preparedSegment.provider === loadSettings().ttsProvider) {
+    return;  // already prepared for this URI under current provider
+  }
+  _preparingFor = upcoming.uri;
+  setPrepStatus(`preparing for ${upcoming.artist} — ${upcoming.name}…`, 'warn');
+  try {
+    const djText = await produceDjScriptOrFallback(justPlayed, upcoming);
+    const provider = loadSettings().ttsProvider;
+    let audioBlob = null;
+    if (provider === 'elevenlabs' || provider === 'openai') {
+      try { audioBlob = await fetchTtsBlob(djText); }
+      catch (e) { console.warn('Pre-gen TTS blob fetch failed (will fall back at gap time):', e); }
+    }
+    // Stash only if no newer request started while we were waiting
+    if (_preparingFor === upcoming.uri) {
+      _preparedSegment = { uri: upcoming.uri, djText, audioBlob, provider };
+      const audioNote = audioBlob ? ` + ${Math.round(audioBlob.size / 1024)}KB audio` : ' (browser TTS — text only)';
+      setPrepStatus(`✓ prepared (${djText.length} chars${audioNote})`, 'ok');
+    }
+  } catch (e) {
+    console.warn('prepareSegment failed:', e);
+    setPrepStatus(`prep failed: ${e.message} (will retry at gap time)`, 'err');
+  } finally {
+    if (_preparingFor === upcoming.uri) _preparingFor = null;
+  }
+}
+
+function consumePreparedSegment(uri) {
+  if (_preparedSegment && _preparedSegment.uri === uri &&
+      _preparedSegment.provider === loadSettings().ttsProvider) {
+    const seg = _preparedSegment;
+    _preparedSegment = null;
+    return seg;
+  }
+  return null;
+}
+
+function clearPreparedSegment() {
+  _preparedSegment = null;
+  _preparingFor = null;
+  setPrepStatus('—', '');
 }
 
 // Predict position from the last player_state_changed event, since the SDK
@@ -1590,6 +1704,7 @@ async function init() {
   });
   document.getElementById('btn-save').addEventListener('click', () => {
     const next = readForm(); saveSettings(next); writeForm(next); renderDebugStorage();
+    clearPreparedSegment();   // settings change may invalidate pre-gen
     setStatus('Saved to localStorage.', 'ok');
   });
   document.getElementById('btn-reset').addEventListener('click', () => {
@@ -1604,6 +1719,7 @@ async function init() {
     if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = null; }
     _playlists = []; _heardPool = []; _newPool = []; _newPoolBuiltAt = null;
     _queue = []; _queueIndex = 0; _radioActive = false;
+    clearPreparedSegment();
     renderAccount(); renderPlayer(); renderPlaylists(); renderQueue();
     updatePoolStats(); updateRadioButtons(); renderDebugStorage();
     setStatus('All localStorage cleared.', 'warn');
@@ -1615,6 +1731,7 @@ async function init() {
     await disconnectPlayer(); clearAuth();
     _playlists = []; _heardPool = []; _newPool = []; _newPoolBuiltAt = null;
     _queue = []; _queueIndex = 0; _radioActive = false;
+    clearPreparedSegment();
     renderAccount(); renderPlayer(); renderPlaylists(); renderQueue();
     updatePoolStats(); updateRadioButtons(); renderDebugStorage();
   });
